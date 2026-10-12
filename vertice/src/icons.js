@@ -1,0 +1,36 @@
+// Ícones próprios, traço simples 24x24. `currentColor` segue o tema; `var(--acc)` destaca.
+const s = (body) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+export const ICONS = {
+  novo: s('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M12 11v6M9 14h6" stroke="var(--acc)"/>'),
+  abrir: s('<path d="M3 7h6l2 2h10v10H3z"/><path d="M3 11h18" stroke="var(--acc)"/>'),
+  salvar: s('<path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3"/><rect x="8" y="13" width="8" height="6" stroke="var(--acc)"/>'),
+  exportar: s('<path d="M6 3h8l4 4v14H6z"/><path d="M12 10v7M9 14l3 3 3-3" stroke="var(--acc)"/>'),
+  selecionar: s('<path d="M5 3l12 9-5 1 3 6-2 1-3-6-4 3z" fill="var(--acc-soft)"/>'),
+  apagar: s('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6" stroke="var(--danger)"/>'),
+  desfazer: s('<path d="M9 7H4V2"/><path d="M4 7a8 8 0 1 1 2 9"/>'),
+  refazer: s('<path d="M15 7h5V2"/><path d="M20 7a8 8 0 1 0-2 9"/>'),
+  zoom: s('<circle cx="10" cy="10" r="6"/><path d="M15 15l5 5"/><path d="M7 10h6M10 7v6" stroke="var(--acc)"/>'),
+  parede: s('<path d="M3 17h18M3 13h18M6 13v4M12 13v4M18 13v4M9 9v4M15 9v4M3 9h18" /><path d="M3 9l0 8" stroke="var(--acc)"/>'),
+  pavimento: s('<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5" stroke="var(--acc)"/><path d="M3 16l9 5 9-5"/>'),
+  qd: s('<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M8 7h8M8 11h8M8 15h8" stroke="var(--acc)"/>'),
+  luz: s('<circle cx="12" cy="12" r="6"/><path d="M8 8l8 8M16 8l-8 8" stroke="var(--acc)"/>'),
+  tug: s('<path d="M5 18L12 6l7 12z"/><circle cx="10" cy="14" r="1" fill="currentColor"/><circle cx="14" cy="14" r="1" fill="currentColor"/><path d="M9 18h6" stroke="var(--acc)"/>'),
+  tue: s('<path d="M5 18L12 6l7 12z" fill="var(--acc-soft)"/><path d="M12 10v5M12 17v.5" stroke="var(--danger)"/>'),
+  interruptor: s('<circle cx="8" cy="16" r="3"/><path d="M10 14l8-8" stroke="var(--acc)"/>'),
+  circuito: s('<path d="M3 12h4l2-5 3 10 3-10 2 5h4" stroke="var(--acc)"/>'),
+  atribuir: s('<path d="M4 20l6-6"/><circle cx="14" cy="10" r="5"/><path d="M12 10h4M14 8v4" stroke="var(--acc)"/>'),
+  dimensionar: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8"/><path d="M8 12h2M12 12h2M16 12h0M8 16h2M12 16h2M16 16h0" stroke="var(--acc)"/>'),
+  vista2d: s('<rect x="3" y="3" width="18" height="18"/><path d="M3 12h10V3M13 12v9" stroke="var(--acc)"/>'),
+  vista3d: s('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" stroke="var(--acc)"/>'),
+  grade: s('<path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18"/>'),
+  orto: s('<path d="M5 19V5M5 19h14"/><path d="M5 19L17 7" stroke="var(--acc)" stroke-dasharray="2 2"/>'),
+  cargas: s('<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M9 9v11M15 9v11"/><path d="M5 6.5h6" stroke="var(--acc)"/>'),
+  materiais: s('<path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M4 7l8 4 8-4M12 11v10" stroke="var(--acc)"/>'),
+  verificar: s('<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6" stroke="var(--ok)"/>'),
+  pasta: s('<path d="M3 6h6l2 2h10v11H3z"/>'),
+  predio: s('<rect x="5" y="3" width="14" height="18"/><path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2"/>'),
+  camada: s('<path d="M12 4l9 5-9 5-9-5z"/>'),
+  raio: s('<path d="M13 2L5 14h6l-1 8 8-12h-6z"/>'),
+};

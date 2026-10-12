@@ -1,0 +1,53 @@
+{
+  "name": "vertice",
+  "version": "0.1.0",
+  "description": "Projeto elétrico predial com planta 2D e vista 3D",
+  "main": "main.js",
+  "scripts": {
+    "bundle": "esbuild src/app.js --bundle --format=iife --minify --outfile=src/bundle.js",
+    "start": "npm run bundle && electron .",
+    "test": "node --test tests/*.test.mjs",
+    "dist:win": "npm run bundle && electron-builder --win --x64"
+  },
+  "author": "Vértice",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.23.1"
+  },
+  "dependencies": {
+    "three": "^0.168.0"
+  },
+  "productName": "Vértice",
+  "build": {
+    "appId": "app.vertice.desktop",
+    "productName": "Vertice",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/index.html",
+      "src/styles.css",
+      "src/bundle.js"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "Vertice-${version}-portatil.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Vertice-${version}-instalador.exe"
+    },
+    "publish": null
+  }
+}
