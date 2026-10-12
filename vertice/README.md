@@ -7,6 +7,22 @@ ribbon, árvore do projeto, painel de propriedades e mensagens.
 Escrito do zero (Electron + Three.js). Não contém código, ícones, textos ou
 arquivos de nenhum software comercial.
 
+## Interface
+
+- Barra de título com atalhos e o nome do projeto; ribbon com ARQUIVO, DESENHOS, ELEMENTOS,
+  LANÇAMENTO (muda conforme a rede escolhida: elétrica, água fria, esgoto, estrutura, SPDA,
+  arquitetura), 3D e OPERAÇÕES.
+- Janelas em abas por pavimento e disciplina ("Térreo - Fiação", "Térreo - Hidráulico",
+  "Visão 3D"...), abertas com duplo clique na árvore Edificação.
+- Painel lateral com Edificação, Propriedades (grade com categorias), Camadas e Mensagens.
+- Barra de status com comando atual, coordenadas, escala 1:N, zoom, grade, snap, orto e
+  filtro de seleção.
+- DESENHOS: linha, retângulo, círculo, texto, medir, rotacionar, espelhar, copiar/colar e
+  filtro de seleção por classe. LANÇAMENTO: altura e posição de inserção dos pontos.
+- 3D: enquadrar, vistas (topo, frente, lateral, isométrica), projeção ortográfica, corte
+  horizontal, planos dos pavimentos, só até o pavimento atual, cor de fundo, eletrodutos e
+  quadros em 3D.
+
 ## Disciplinas
 
 | aba | o que faz | cálculo (simplificado, referência) |

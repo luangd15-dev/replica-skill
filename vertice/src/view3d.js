@@ -20,10 +20,13 @@ export class View3D {
   init() {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
-    this.renderer.setClearColor(0xf4f6f9);
+    this.renderer.setClearColor(this.fundo || 0xf4f6f9);
+    this.renderer.localClippingEnabled = true;
     this.el.appendChild(this.renderer.domElement);
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+    this.perspectiva = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+    this.orto = new THREE.OrthographicCamera(-10, 10, 10, -10, -1000, 5000);
+    this.camera = this.perspectiva;
     this.camera.position.set(18, 16, 22);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -38,6 +41,7 @@ export class View3D {
     this.initBoxSelect();
     new ResizeObserver(() => this.resize()).observe(this.el);
     this.ready = true;
+    this.setCorte(this.corte ?? null);
     this.resize();
     const loop = () => {
       requestAnimationFrame(loop);
@@ -93,9 +97,51 @@ export class View3D {
     const r = this.el.getBoundingClientRect();
     if (!r.width || !r.height) return;
     this.renderer.setSize(r.width, r.height);
-    this.camera.aspect = r.width / r.height;
-    this.camera.updateProjectionMatrix();
+    this.perspectiva.aspect = r.width / r.height;
+    this.perspectiva.updateProjectionMatrix();
+    this.ajustaOrto();
   }
+
+  ajustaOrto() {
+    const r = this.el.getBoundingClientRect();
+    if (!r.width) return;
+    const d = this.perspectiva.position.distanceTo(this.controls.target) * 0.42;
+    const a = r.width / r.height;
+    Object.assign(this.orto, { left: -d * a, right: d * a, top: d, bottom: -d });
+    this.orto.updateProjectionMatrix();
+  }
+
+  // ---- comandos da aba 3D
+  setOrtografica(on) {
+    if (!this.ready) this.init();
+    const de = this.camera, para = on ? this.orto : this.perspectiva;
+    if (de === para) return;
+    para.position.copy(de.position);
+    para.quaternion.copy(de.quaternion);
+    if (on) this.ajustaOrto();
+    this.camera = para;
+    this.controls.object = para;
+    this.controls.update();
+  }
+  vista(qual) {
+    if (!this.ready) this.init();
+    const t = this.controls.target, d = Math.max(10, this.camera.position.distanceTo(t));
+    const pos = { topo: [0, d, 0.001], frente: [0, 0, d], lateral: [d, 0, 0], iso: [d * 0.6, d * 0.55, d * 0.6] }[qual];
+    this.camera.position.set(t.x + pos[0], t.y + pos[1], t.z + pos[2]);
+    this.camera.lookAt(t);
+    this.controls.update();
+  }
+  setFundo(cor) {
+    this.fundo = cor;
+    if (this.ready) this.renderer.setClearColor(cor);
+  }
+  setCorte(h) {
+    // corte horizontal: esconde o que está acima de h (m)
+    this.corte = h;
+    if (!this.ready) return;
+    this.renderer.clippingPlanes = h == null ? [] : [new THREE.Plane(new THREE.Vector3(0, -1, 0), h)];
+  }
+  enquadrar() { if (this.ready) this.rebuild(true); }
 
   show() {
     if (!this.ready) this.init();
@@ -134,8 +180,20 @@ export class View3D {
       return add(m, data);
     };
 
+    const atual = project.pavimentos.indexOf(this.store.floor);
     for (const [pi, pav] of project.pavimentos.entries()) {
+      if (settings.so3dAteAtual && pi > atual) continue;
       const cur = pav === this.store.floor;
+      if (settings.planos3d) {
+        const xs = pav.paredes.flatMap((w) => [w.x1, w.x2]), zs = pav.paredes.flatMap((w) => [w.y1, w.y2]);
+        if (xs.length) {
+          const g = new THREE.PlaneGeometry(Math.max(...xs) - Math.min(...xs) + 4, Math.max(...zs) - Math.min(...zs) + 4);
+          const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: cur ? 0x6fa8ff : 0x9aa7b5, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }));
+          m.rotation.x = -Math.PI / 2;
+          m.position.set((Math.max(...xs) + Math.min(...xs)) / 2, pav.cota + 0.01, (Math.max(...zs) + Math.min(...zs)) / 2);
+          add(m);
+        }
+      }
       const y0 = pav.cota;
       if (vis('arq')) for (const w of pav.paredes) {
         const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1);
@@ -172,30 +230,62 @@ export class View3D {
       for (const el of pav.elementos) {
         const t = TIPOS[el.tipo];
         if (!t || el.tipo === 'pilar' || !vis(t.disc)) continue;
-        const g = el.tipo === 'luz' ? new THREE.SphereGeometry(0.12, 16, 12)
-          : el.tipo === 'qd' ? new THREE.BoxGeometry(0.4, 0.55, 0.1)
+        if (el.tipo === 'qd') {
+          // quadro: caixa laranja com moldura clara
+          const grp = new THREE.Group();
+          grp.add(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.8, 0.12), new THREE.MeshStandardMaterial({ color: 0xf2f2f0, roughness: 0.6 })));
+          const fundo = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.7, 0.13), new THREE.MeshStandardMaterial({ color: 0xd9823b, roughness: 0.7 }));
+          grp.add(fundo);
+          for (let k = 0; k < 2; k++) {
+            const trilho = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.09, 0.15), new THREE.MeshStandardMaterial({ color: 0xe8e8e8 }));
+            trilho.position.y = 0.14 - k * 0.24;
+            grp.add(trilho);
+          }
+          grp.position.set(el.x, y0 + el.altura, el.y);
+          add(grp, { kind: 'elemento', ref: el, pav });
+          continue;
+        }
+        const g = el.tipo === 'luz' ? new THREE.CylinderGeometry(0.1, 0.1, 0.06, 8)
+          : t.disc === 'ele' ? new THREE.BoxGeometry(0.1, 0.12, 0.06)
           : el.tipo === 'reservatorio' ? new THREE.CylinderGeometry(0.6, 0.55, 0.9, 24)
           : el.tipo === 'ci' ? new THREE.BoxGeometry(0.6, 0.4, 0.6)
           : t.disc === 'hid' ? new THREE.BoxGeometry(0.35, 0.25, 0.35)
           : new THREE.BoxGeometry(0.12, 0.12, 0.06);
-        const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: COR_TIPO[el.tipo] ?? 0x888888, emissive: el.tipo === 'luz' ? 0x6b5410 : 0 }));
+        const cor = t.disc === 'ele' ? 0xf5c518 : COR_TIPO[el.tipo] ?? 0x888888;
+        const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: cor, roughness: 0.55 }));
         m.position.set(el.x, y0 + el.altura, el.y);
         add(m, { kind: 'elemento', ref: el, pav });
       }
     }
 
-    // fiação pelo forro
+    // eletrodutos: tubos amarelos pelo forro, descendo até cada ponto
+    const eletroduto = new THREE.MeshStandardMaterial({ color: 0xf5c518, roughness: 0.45 });
+    const tuboReto = (p, q, raio, mat) => {
+      const L = p.distanceTo(q);
+      if (L < 0.01) return;
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(raio, raio, L, 10), mat);
+      m.position.copy(p).add(q).multiplyScalar(0.5);
+      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), q.clone().sub(p).normalize());
+      add(m);
+    };
     if (vis('ele')) for (const r of results) {
       if (!r.qd) continue;
       const pav = project.pavimentos.find((p) => p.elementos.includes(r.qd));
-      if (!pav) continue;
-      const yc = pav.cota + pav.peDireito - 0.05;
-      const pts = [new THREE.Vector3(r.qd.x, pav.cota + r.qd.altura, r.qd.y), new THREE.Vector3(r.qd.x, yc, r.qd.y)];
+      if (!pav || (settings.so3dAteAtual && project.pavimentos.indexOf(pav) > atual)) continue;
+      const yc = pav.cota + pav.peDireito - 0.12;
+      const raio = 0.0125;
+      const V = (x, y, z) => new THREE.Vector3(x, y, z);
+      tuboReto(V(r.qd.x, pav.cota + r.qd.altura + 0.4, r.qd.y), V(r.qd.x, yc, r.qd.y), raio, eletroduto);
+      let prev = V(r.qd.x, yc, r.qd.y);
       for (const e of r.rota) {
-        pts.push(new THREE.Vector3(e.x, yc, e.y));
-        if (e.altura < pav.peDireito - 0.2) pts.push(new THREE.Vector3(e.x, pav.cota + e.altura, e.y), new THREE.Vector3(e.x, yc, e.y));
+        const topo = V(e.x, yc, e.y);
+        // trecho em L pelo forro (primeiro x, depois z)
+        const meio = V(e.x, yc, prev.z);
+        tuboReto(prev, meio, raio, eletroduto);
+        tuboReto(meio, topo, raio, eletroduto);
+        if (e.altura < pav.peDireito - 0.25) tuboReto(topo, V(e.x, pav.cota + e.altura + 0.06, e.y), raio, eletroduto);
+        prev = topo;
       }
-      add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: corCircuito(project, r.circuito.id) })));
     }
 
     // tubulações: tubos de verdade, com o diâmetro calculado

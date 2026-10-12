@@ -18,6 +18,7 @@ export const CAMADAS = [
   { nome: 'HID-ESGOTO', cor: 32 },
   { nome: 'HID-TEXTO', cor: 4 },
   { nome: 'SPDA', cor: 3 },
+  { nome: 'DESENHO', cor: 7 },
   { nome: 'TITULO', cor: 7 },
 ];
 
@@ -114,6 +115,14 @@ export function entidadesPavimento(projeto, calc, pav, dx = 0) {
     if (sp.contorno.pav === pav) for (const l of sp.captacao) line('SPDA', l.x1, l.y1, l.x2, l.y2);
     for (const d of sp.descidas) circle('SPDA', d.x, d.y, 0.1);
     if (projeto.pavimentos.indexOf(pav) === 0) poly('SPDA', [[sp.anel.minX, sp.anel.minY], [sp.anel.maxX, sp.anel.minY], [sp.anel.maxX, sp.anel.maxY], [sp.anel.minX, sp.anel.maxY]]);
+  }
+
+  // linhas e textos desenhados no Vértice
+  for (const d of pav.desenho || []) {
+    if (d.t === 'linha') line('DESENHO', d.x1, d.y1, d.x2, d.y2);
+    else if (d.t === 'ret') poly('DESENHO', [[d.x1, d.y1], [d.x2, d.y1], [d.x2, d.y2], [d.x1, d.y2]]);
+    else if (d.t === 'circ') circle('DESENHO', d.x, d.y, d.r);
+    else if (d.t === 'texto') text('DESENHO', d.x, d.y, d.h, d.texto);
   }
 
   // referência importada

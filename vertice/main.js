@@ -15,6 +15,9 @@ function createWindow() {
     title: 'Vértice',
     backgroundColor: '#eef0f3',
     autoHideMenuBar: true,
+    // barra de título desenhada pelo app (atalhos + nome do projeto); minimizar/maximizar/fechar são do sistema
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#f1f2f4', symbolColor: '#333333', height: 32 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

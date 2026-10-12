@@ -1,7 +1,7 @@
 {
   "name": "vertice",
-  "version": "0.2.0",
-  "description": "Projeto elétrico predial com planta 2D e vista 3D",
+  "version": "0.3.0",
+  "description": "Projeto el\u00e9trico predial com planta 2D e vista 3D",
   "main": "main.js",
   "scripts": {
     "bundle": "esbuild src/app.js --bundle --format=iife --minify --loader:.dxf=text --outfile=src/bundle.js",
@@ -10,7 +10,7 @@
     "dist:win": "node scripts/baixar-libredwg.mjs && npm run bundle && electron-builder --win --x64",
     "libredwg": "node scripts/baixar-libredwg.mjs"
   },
-  "author": "Vértice",
+  "author": "V\u00e9rtice",
   "license": "UNLICENSED",
   "devDependencies": {
     "electron": "^31.7.7",
@@ -20,7 +20,7 @@
   "dependencies": {
     "three": "^0.168.0"
   },
-  "productName": "Vértice",
+  "productName": "V\u00e9rtice",
   "build": {
     "appId": "app.vertice.desktop",
     "productName": "Vertice",

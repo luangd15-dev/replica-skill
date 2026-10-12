@@ -71,7 +71,7 @@ function normalizar(p) {
   p.spda ||= { ativo: false, nivel: 'III' };
   p.estrutura ||= { sigmaSolo: 200 };
   p.circuitos ||= [];
-  for (const pv of p.pavimentos) { pv.vigas ||= []; pv.lajes ||= []; pv.elementos ||= []; pv.paredes ||= []; }
+  for (const pv of p.pavimentos) { pv.vigas ||= []; pv.lajes ||= []; pv.elementos ||= []; pv.paredes ||= []; pv.desenho ||= []; pv.id ||= 'PV' + Math.random().toString(36).slice(2, 8); }
   p.pavimentos.sort((a, b) => a.cota - b.cota);
   return p;
 }
@@ -86,7 +86,9 @@ const store = {
     grid: true, snap: true, orto: true,
     vis: { arq: true, est: true, ele: true, hid: true, spda: true, fundo: true },
     chamada: { ele: 'simples', hid: 'circulo', est: 'retangulo' },
+    filtro: 'todos', so3dAteAtual: false, planos3d: false, orto3d: false, fundo3d: '#f4f6f9', corte: null, escala: 50, altura: null, subrede: null,
   },
+  rede: 'ele',
   results: [], hid: null, spda: null, est: null,
   undo: [], redo: [],
   clipboard: null,
@@ -137,6 +139,7 @@ const store = {
       const w = f.paredes.find((e) => e.id === id); if (w) return { kind: 'parede', ref: w };
       const v = f.vigas.find((e) => e.id === id); if (v) return { kind: 'viga', ref: v };
       const l = f.lajes.find((e) => e.id === id); if (l) return { kind: 'laje', ref: l };
+      const d = f.desenho.find((e) => e.id === id); if (d) return { kind: 'desenho', ref: d };
       return null;
     };
     const itens = selIds.map(achar).filter(Boolean);
@@ -151,13 +154,14 @@ const store = {
   selItens() {
     const s = this.selection;
     if (!s) return [];
-    return s.kind === 'multi' ? s.itens : ['elemento', 'parede', 'viga', 'laje'].includes(s.kind) ? [s] : [];
+    return s.kind === 'multi' ? s.itens : ['elemento', 'parede', 'viga', 'laje', 'desenho'].includes(s.kind) ? [s] : [];
   },
   isSelected(ref) { return this.selItens().some((it) => it.ref === ref); },
   select(sel, silent) {
     this.selection = sel;
     if (sel?.kind === 'elemento' && sel.ref.circuitoId && !silent) this.activeCircuitId = sel.ref.circuitoId;
     plan.render(); renderProps(); renderTree(); syncCircuitSelect();
+    if (sel && ['elemento', 'parede', 'viga', 'laje', 'desenho', 'multi'].includes(sel.kind)) mostrarPainelSeSelecao();
   },
   selectMany(itens, add) {
     const atual = add ? this.selItens() : [];
@@ -176,7 +180,7 @@ const store = {
     this.commit('Apagar', () => {
       const f = this.floor;
       for (const it of itens) {
-        const lista = { elemento: f.elementos, parede: f.paredes, viga: f.vigas, laje: f.lajes }[it.kind];
+        const lista = { elemento: f.elementos, parede: f.paredes, viga: f.vigas, laje: f.lajes, desenho: f.desenho }[it.kind];
         const i = lista.indexOf(it.ref);
         if (i >= 0) lista.splice(i, 1);
       }
@@ -205,9 +209,9 @@ const store = {
       const f = this.floor;
       for (const it of cb.itens) {
         const r = JSON.parse(JSON.stringify(it.ref));
-        r.id = this.uid(it.kind === 'elemento' ? 'E' : it.kind === 'parede' ? 'P' : it.kind === 'viga' ? 'V' : 'L');
+        r.id = this.uid({ elemento: 'E', parede: 'P', viga: 'V', laje: 'L', desenho: 'D' }[it.kind]);
         if ('x' in r) { r.x += dx; r.y += dy; } else { r.x1 += dx; r.y1 += dy; r.x2 += dx; r.y2 += dy; }
-        ({ elemento: f.elementos, parede: f.paredes, viga: f.vigas, laje: f.lajes })[it.kind].push(r);
+        ({ elemento: f.elementos, parede: f.paredes, viga: f.vigas, laje: f.lajes, desenho: f.desenho })[it.kind].push(r);
         novos.push({ kind: it.kind, ref: r });
       }
     });
@@ -217,134 +221,229 @@ const store = {
   setTool(t) {
     plan.setTool(t);
     document.querySelectorAll('.rb[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
-    const nome = TIPOS[t]?.nome || RIBBON_LABEL[t] || t;
-    $('#st-tool').textContent = 'Comando: ' + nome;
+    clearTimeout(flash);
+    atualizaComando();
     this.refreshHint();
   },
   refreshHint() { $('#hint').textContent = plan.hint(); },
-  setCoord(x, y) { $('#st-coord').textContent = `X ${fmt(x)}  Y ${fmt(y)}`; },
+  setCoord(x, y) { $('#st-coord').textContent = `${fmt(x)} ; ${fmt(y)}`; },
   log: (t, k) => log(t, k),
 };
 
 // ---------------------------------------------------------------- mensagens
+let flash = null;
 function log(texto, kind = '') {
   const d = document.createElement('div');
   const h = new Date().toLocaleTimeString('pt-BR');
   d.innerHTML = `<span class="t">${h}</span><span class="${kind}">${esc(texto)}</span>`;
   $('#log').appendChild(d);
   $('#log').scrollTop = 1e9;
+  // a última mensagem aparece na barra de status por alguns segundos
+  $('#st-cmd').textContent = texto;
+  $('#st-cmd').title = texto;
+  clearTimeout(flash);
+  flash = setTimeout(atualizaComando, 5000);
+}
+function atualizaComando() {
+  const nome = TIPOS[plan.tool]?.nome || RIBBON_LABEL[plan.tool] || 'Selecione';
+  $('#st-cmd').textContent = `Comando - ${nome}`;
 }
 
 function updateTitle() {
   const nome = store.filePath ? store.filePath.split(/[\\/]/).pop() : store.project.nome;
   const t = `${nome}${store.dirty ? ' *' : ''}`;
-  $('#doc-title').textContent = t;
+  $('#doc-title').textContent = `Vértice [${t}]`;
   host.setTitle(`${t} - Vértice`);
-  $('#floor-label').textContent = `Pavimento: ${store.floor.nome}${store.floor.intermediario ? ' (nível intermediário)' : ''}  ·  cota ${fmt(store.floor.cota)} m`;
+  $('#st-floor').textContent = `${store.floor.nome}${store.floor.intermediario ? ' (intermediário)' : ''} · cota ${fmt(store.floor.cota)} m`;
   const v = [...new Set(store.project.circuitos.map((c) => c.tensao))].join('/');
-  $('#st-volt').textContent = `Tensões: ${v || '-'} V`;
+  $('#st-volt').textContent = v ? `${v} V` : '';
+  renderDocTabs();
 }
 
+// ---------------------------------------------------------------- janelas (pavimento + disciplina)
+const VISTAS = {
+  arq: { nome: 'Arquitetura', icon: 'parede', foco: 'arq', rede: 'arq' },
+  est: { nome: 'Estrutura', icon: 'pilar', foco: 'est', rede: 'est' },
+  ele: { nome: 'Fiação', icon: 'raio', foco: 'ele', rede: 'ele' },
+  af: { nome: 'Hidráulico', icon: 'hidro', foco: 'hid', sub: 'af', rede: 'af' },
+  esg: { nome: 'Sanitário', icon: 'esgoto', foco: 'hid', sub: 'esg', rede: 'esg' },
+  spda: { nome: 'SPDA', icon: 'spda', foco: 'spda', rede: 'spda' },
+  '3d': { nome: 'Visão 3D', icon: 'vista3d' },
+};
+const REDES = [['ele', 'Elétrica'], ['af', 'Água fria'], ['esg', 'Esgoto'], ['est', 'Estrutura'], ['spda', 'SPDA'], ['arq', 'Arquitetura']];
+const docs = { lista: [], ativo: null };
+let docSeq = 0;
+
+function abrirDoc(tipo, pavId = store.floor.id) {
+  let d = docs.lista.find((x) => x.tipo === tipo && (tipo === '3d' || x.pavId === pavId));
+  if (!d) { d = { id: ++docSeq, tipo, pavId: tipo === '3d' ? null : pavId }; docs.lista.push(d); }
+  ativarDoc(d);
+}
+function ativarDoc(d) {
+  docs.ativo = d;
+  const v = VISTAS[d.tipo];
+  if (d.tipo === '3d') {
+    setView('3d');
+  } else {
+    const i = store.project.pavimentos.findIndex((p) => p.id === d.pavId);
+    if (i < 0) return fecharDoc(d);
+    if (i !== store.floorIdx) { store.floorIdx = i; store.selection = null; plan.start = null; view3d.invalidate(); }
+    store.settings.foco = v.foco === 'arq' ? null : v.foco;
+    store.settings.subrede = v.sub || null;
+    store.rede = v.rede;
+    setView('2d');
+    renderProps();
+  }
+  if (currentTab === 'LANÇAMENTO') renderRibbon();
+  syncRede();
+  renderDocTabs(); renderTree(); updateTitle(); plan.render();
+}
+function fecharDoc(d) {
+  const i = docs.lista.indexOf(d);
+  if (i < 0) return;
+  if (docs.lista.filter((x) => x.tipo !== '3d').length === 1 && d.tipo !== '3d') return log('Mantenha pelo menos uma janela de planta aberta.', 'warn');
+  docs.lista.splice(i, 1);
+  if (docs.ativo === d) ativarDoc(docs.lista[Math.max(0, i - 1)]);
+  else renderDocTabs();
+}
+function renderDocTabs() {
+  const box = $('#doc-tabs');
+  // janelas de pavimentos excluídos somem
+  docs.lista = docs.lista.filter((d) => d.tipo === '3d' || store.project.pavimentos.some((p) => p.id === d.pavId));
+  box.innerHTML = docs.lista.map((d) => {
+    const pav = store.project.pavimentos.find((p) => p.id === d.pavId);
+    const nome = d.tipo === '3d' ? 'Visão 3D' : `${pav.nome} - ${VISTAS[d.tipo].nome}`;
+    return `<div class="doc-tab${d === docs.ativo ? ' active' : ''}" data-id="${d.id}" title="${esc(nome)}">${ICONS[VISTAS[d.tipo].icon]}<span>${esc(nome)}</span><button class="x" title="Fechar">×</button></div>`;
+  }).join('');
+}
+$('#doc-tabs').addEventListener('mousedown', (e) => {
+  const t = e.target.closest('.doc-tab');
+  if (!t) return;
+  const d = docs.lista.find((x) => x.id === Number(t.dataset.id));
+  if (e.target.classList.contains('x') || e.button === 1) { e.preventDefault(); return fecharDoc(d); }
+  ativarDoc(d);
+});
+
 // ---------------------------------------------------------------- ribbon
-const tool = (id, label) => ({ id, label, tool: true });
-const RIBBON = [
-  { tab: 'Início', groups: [
-    { label: 'Histórico', items: [
-      { id: 'desfazer', label: 'Desfazer', run: () => store.doUndo() },
-      { id: 'refazer', label: 'Refazer', run: () => store.doRedo() },
+// item: { id, label, run } | { id, label, tool: true } | { ..., small: true } | { id, label, menu: [...] } | { field }
+const tool = (id, label, extra = {}) => ({ id, label, tool: true, ...extra });
+const small = (o) => ({ ...o, small: true });
+const APARELHOS = ['bacia', 'lavatorio', 'chuveiro', 'pia', 'tanque', 'mlr'];
+
+const GRUPOS_LANCAMENTO = {
+  ele: [
+    { label: 'Quadro', items: [tool('qd', 'Quadro de distribuição')] },
+    { label: 'Pontos', items: [
+      { id: 'ponto', label: 'Ponto', menu: ['luz', 'interruptor', 'tug', 'tue'].map((t) => tool(t, TIPOS[t].nome)) },
+      small(tool('luz', 'Lâmpada')), small(tool('interruptor', 'Interruptor')), small(tool('tug', 'Tomada TUG')), small(tool('tue', 'Tomada TUE')),
     ] },
-    { label: 'Edição', items: [
-      tool('selecionar', 'Selecionar'), tool('apagar', 'Apagar'),
-      { id: 'copiar', label: 'Copiar bloco', run: () => store.copy() },
-      { id: 'colar', label: 'Colar bloco', run: () => store.paste() },
-    ] },
-    { label: 'Exibição', items: [
-      { id: 'zoom', label: 'Zoom extensão', run: () => plan.zoomExtents() },
-      { id: 'vista2d', label: 'Planta 2D', run: () => setView('2d') },
-      { id: 'vista3d', label: 'Vista 3D', run: () => setView('3d') },
-    ] },
-  ] },
-  { tab: 'Arquitetura', groups: [
-    { label: 'Elementos', items: [tool('parede', 'Parede')] },
-    { label: 'Edificação', items: [
-      { id: 'pavimento', label: 'Novo pavimento', run: () => novoPavimento() },
-      { id: 'nivel', label: 'Nível intermediário', run: () => novoNivelIntermediario() },
-    ] },
-    { label: 'Referência DWG/DXF', items: [
-      { id: 'importarCad', label: 'Importar DWG/DXF', run: () => importarCad() },
-      { id: 'camadas', label: 'Camadas', run: () => dialogoCamadas() },
-      { id: 'paredesRef', label: 'Paredes do desenho', run: () => dialogoParedes() },
-      { id: 'removerRef', label: 'Remover referência', run: () => removerReferencia() },
-    ] },
-  ] },
-  { tab: 'Estrutural', groups: [
-    { label: 'Lançamento', items: [{ id: 'lancamento', label: 'Lançamento automático', run: () => lancarEstrutura() }] },
-    { label: 'Elementos', items: [tool('pilar', 'Pilar'), tool('viga', 'Viga'), tool('laje', 'Laje')] },
-    { label: 'Cálculo', items: [
-      { id: 'calcEst', label: 'Vigas', run: () => relatorioVigas() },
-      { id: 'pilar', label: 'Pilares', run: () => relatorioPilares() },
-      { id: 'fundacao', label: 'Fundações', run: () => relatorioFundacoes() },
-    ] },
-  ] },
-  { tab: 'Elétrico', groups: [
-    { label: 'Quadros', items: [tool('qd', 'Quadro')] },
-    { label: 'Pontos', items: [tool('luz', 'Ponto de luz'), tool('interruptor', 'Interruptor'), tool('tug', 'Tomada TUG'), tool('tue', 'Tomada TUE')] },
     { label: 'Circuitos', items: [
       { id: 'circuito', label: 'Novo circuito', run: () => novoCircuito() },
       tool('atribuir', 'Atribuir circuito'),
       { field: 'circuito-ativo' },
     ] },
-    { label: 'Cálculo', items: [
-      { id: 'dimensionar', label: 'Dimensionar', run: () => relatorioCargas() },
-      { id: 'verificar', label: 'Verificar projeto', run: () => relatorioVerificacoes() },
+    { label: 'Cálculo', items: [{ id: 'dimensionar', label: 'Dimensionar', run: () => relatorioCargas() }] },
+  ],
+  af: [
+    { label: 'Origem', items: [tool('reservatorio', 'Reservatório')] },
+    { label: 'Pontos', items: [
+      { id: 'pecas', label: 'Peça de utilização', menu: APARELHOS.map((t) => tool(t, TIPOS[t].nome)) },
+      ...APARELHOS.map((t) => small(tool(t, TIPOS[t].nome.split(' ')[0]))),
     ] },
-  ] },
-  { tab: 'Hidrossanitário', groups: [
-    { label: 'Origem e destino', items: [tool('reservatorio', 'Reservatório'), tool('ci', 'Caixa de inspeção')] },
-    { label: 'Aparelhos', items: [tool('bacia', 'Bacia'), tool('lavatorio', 'Lavatório'), tool('chuveiro', 'Chuveiro'), tool('pia', 'Pia'), tool('tanque', 'Tanque'), tool('mlr', 'Máq. lavar')] },
-    { label: 'Cálculo', items: [
-      { id: 'hidro', label: 'Água fria', run: () => relatorioAguaFria() },
-      { id: 'esgoto', label: 'Esgoto', run: () => relatorioEsgoto() },
+    { label: 'Cálculo', items: [{ id: 'hidro', label: 'Dimensionar água fria', run: () => relatorioAguaFria() }] },
+  ],
+  esg: [
+    { label: 'Destino', items: [tool('ci', 'Caixa de inspeção')] },
+    { label: 'Aparelhos', items: [
+      { id: 'pecas', label: 'Aparelho sanitário', menu: APARELHOS.map((t) => tool(t, TIPOS[t].nome)) },
+      ...APARELHOS.map((t) => small(tool(t, TIPOS[t].nome.split(' ')[0]))),
     ] },
-  ] },
-  { tab: 'SPDA', groups: [
+    { label: 'Cálculo', items: [{ id: 'esgoto', label: 'Dimensionar esgoto', run: () => relatorioEsgoto() }] },
+  ],
+  est: [
+    { label: 'Lançamento', items: [{ id: 'lancamento', label: 'Lançamento automático', run: () => lancarEstrutura() }] },
+    { label: 'Elementos', items: [tool('pilar', 'Pilar'), tool('viga', 'Viga'), tool('laje', 'Laje')] },
+    { label: 'Cálculo', items: [small({ id: 'calcEst', label: 'Vigas', run: () => relatorioVigas() }), small({ id: 'pilar', label: 'Pilares', run: () => relatorioPilares() }), small({ id: 'fundacao', label: 'Fundações', run: () => relatorioFundacoes() })] },
+  ],
+  spda: [
     { label: 'Proteção', items: [
       { id: 'spda', label: 'SPDA ativo', run: () => toggleSpda(), active: () => store.project.spda.ativo },
       { field: 'spda-nivel' },
     ] },
     { label: 'Cálculo', items: [{ id: 'malha', label: 'Relatório SPDA', run: () => relatorioSpda() }] },
+  ],
+  arq: [
+    { label: 'Elementos', items: [tool('parede', 'Parede')] },
+    { label: 'Referência', items: [{ id: 'paredesRef', label: 'Paredes do desenho', run: () => dialogoParedes() }] },
+  ],
+};
+
+const RIBBON = [
+  { tab: 'DESENHOS', groups: () => [
+    { label: 'Construir', items: [small(tool('linha', 'Linha')), small(tool('retangulo', 'Retângulo')), small(tool('circulo', 'Círculo')), small(tool('texto', 'Texto')), small(tool('medir', 'Medir'))] },
+    { label: 'Manipular', items: [
+      tool('selecionar', 'Mover / selecionar', { id: 'selecionar' }),
+      { id: 'rotacionar', label: 'Rotacionar 90°', run: () => transformar('rot') },
+      { id: 'espelhar', label: 'Espelhar', run: () => transformar('espH') },
+      small({ id: 'espelharV', label: 'Espelhar vertical', run: () => transformar('espV') }),
+      small(tool('apagar', 'Apagar')),
+    ] },
+    { label: 'Editar', items: [
+      { id: 'copiar', label: 'Copiar (clipboard)', run: () => store.copy() },
+      { id: 'colar', label: 'Colar (clipboard)', run: () => store.paste() },
+      small({ id: 'desfazer', label: 'Desfazer', run: () => store.doUndo() }), small({ id: 'refazer', label: 'Refazer', run: () => store.doRedo() }),
+    ] },
+    { label: 'Níveis', items: [{ id: 'camadas', label: 'Camadas', run: () => mostrarPainel('camadas') }, { field: 'chamadas' }] },
+    { label: 'Filtro de seleção', items: [{ field: 'filtro' }] },
   ] },
-  { tab: 'Visualizar', groups: [
-    { label: 'Janelas', items: [
-      { id: 'vista2d', label: 'Planta 2D', run: () => setView('2d') },
-      { id: 'vista3d', label: 'Vista 3D', run: () => setView('3d') },
-      { id: 'zoom', label: 'Zoom extensão', run: () => plan.zoomExtents() },
+  { tab: 'ELEMENTOS', groups: () => [
+    { label: 'Arquitetura', items: [tool('parede', 'Parede')] },
+    { label: 'Edificação', items: [
+      { id: 'pavimento', label: 'Novo pavimento', run: () => novoPavimento() },
+      { id: 'nivel', label: 'Nível intermediário', run: () => novoNivelIntermediario() },
     ] },
-    { label: 'Auxílios', items: [
-      { id: 'grade', label: 'Grade', run: () => toggleSetting('grid'), active: () => store.settings.grid },
-      { id: 'orto', label: 'Ortogonal', run: () => toggleSetting('orto'), active: () => store.settings.orto },
+    { label: 'Estrutura', items: [tool('pilar', 'Pilar'), tool('viga', 'Viga'), tool('laje', 'Laje'), { id: 'lancamento', label: 'Lançamento automático', run: () => lancarEstrutura() }] },
+    { label: 'Referência DWG/DXF', items: [
+      { id: 'importarCad', label: 'Importar DWG/DXF', run: () => importarCad() },
+      small({ id: 'camadas', label: 'Camadas', run: () => mostrarPainel('camadas') }),
+      small({ id: 'paredesRef', label: 'Paredes do desenho', run: () => dialogoParedes() }),
+      small({ id: 'removerRef', label: 'Remover referência', run: () => removerReferencia() }),
     ] },
-    { label: 'Disciplinas visíveis', items: Object.entries({ arq: 'parede', est: 'pilar', ele: 'raio', hid: 'hidro', spda: 'spda', fundo: 'camadas' }).map(([d, ic]) => ({
+  ] },
+  { tab: 'LANÇAMENTO', groups: () => [
+    { label: 'Rede', items: [{ field: 'rede' }] },
+    ...GRUPOS_LANCAMENTO[store.rede || 'ele'],
+    { label: '3D', items: [{ id: 'vista3d', label: 'Visão 3D geral', run: () => abrirDoc('3d') }] },
+  ] },
+  { tab: '3D', groups: () => [
+    { label: 'Visualização', items: [
+      { id: 'enquadrar', label: 'Enquadrar 3D', run: () => { abrirDoc('3d'); view3d.enquadrar(); } },
+      { id: 'atualizar', label: 'Atualização completa', run: () => { abrirDoc('3d'); view3d.invalidate(); log('Modelo 3D atualizado.'); } },
+    ] },
+    { label: 'Vistas', items: ['topo', 'frente', 'lateral', 'iso'].map((v) => small({ id: v, label: { topo: 'Topo', frente: 'Frente', lateral: 'Lateral', iso: 'Isométrica' }[v], run: () => { abrirDoc('3d'); view3d.vista(v); } })) },
+    { label: 'Configurações', items: [
+      small({ id: 'ateAtual', label: 'Só até o pavimento atual', run: () => toggle3d('so3dAteAtual'), active: () => store.settings.so3dAteAtual }),
+      small({ id: 'planos', label: 'Planos dos pavimentos', run: () => toggle3d('planos3d'), active: () => store.settings.planos3d }),
+      small({ id: 'ortografica', label: 'Projeção ortográfica', run: () => { store.settings.orto3d = !store.settings.orto3d; view3d.setOrtografica(store.settings.orto3d); renderRibbon(); }, active: () => store.settings.orto3d }),
+      { field: 'fundo3d' },
+    ] },
+    { label: 'Corte', items: [{ field: 'corte' }] },
+    { label: 'Disciplinas visíveis', items: Object.entries({ arq: 'parede', est: 'pilar', ele: 'raio', hid: 'hidro', spda: 'spda', fundo: 'camadas' }).map(([d, ic]) => small({
       id: ic, label: DISCIPLINAS[d].replace('Referência DWG/DXF', 'Referência'), run: () => toggleVis(d), active: () => store.settings.vis[d],
     })) },
-    { label: 'Linhas de chamada', items: [{ field: 'chamadas' }] },
   ] },
-  { tab: 'Relatórios', groups: [
-    { label: 'Geral', items: [
-      { id: 'materiais', label: 'Lista de materiais', run: () => relatorioMateriais() },
-      { id: 'verificar', label: 'Verificações', run: () => relatorioVerificacoes() },
-    ] },
-    { label: 'Disciplinas', items: [
+  { tab: 'OPERAÇÕES', groups: () => [
+    { label: 'Dimensionamento', items: [
       { id: 'cargas', label: 'Quadro de cargas', run: () => relatorioCargas() },
-      { id: 'calcEst', label: 'Vigas', run: () => relatorioVigas() },
-      { id: 'pilar', label: 'Pilares', run: () => relatorioPilares() },
-      { id: 'hidro', label: 'Água fria', run: () => relatorioAguaFria() },
-      { id: 'esgoto', label: 'Esgoto', run: () => relatorioEsgoto() },
-      { id: 'malha', label: 'SPDA', run: () => relatorioSpda() },
+      small({ id: 'calcEst', label: 'Vigas', run: () => relatorioVigas() }), small({ id: 'pilar', label: 'Pilares', run: () => relatorioPilares() }), small({ id: 'fundacao', label: 'Fundações', run: () => relatorioFundacoes() }),
+      small({ id: 'hidro', label: 'Água fria', run: () => relatorioAguaFria() }), small({ id: 'esgoto', label: 'Esgoto', run: () => relatorioEsgoto() }), small({ id: 'malha', label: 'SPDA', run: () => relatorioSpda() }),
     ] },
+    { label: 'Verificação', items: [{ id: 'verificar', label: 'Verificar projeto', run: () => relatorioVerificacoes() }] },
+    { label: 'Quantitativos', items: [{ id: 'materiais', label: 'Lista de materiais', run: () => relatorioMateriais() }] },
+    { label: 'Exportar', items: [{ id: 'exportar', label: 'Relatório HTML', run: () => exportarRelatorioCompleto() }, { id: 'exportarCad', label: 'DWG / DXF', run: () => exportarCad(true) }] },
   ] },
 ];
-const ARQUIVO = [
+const ARQUIVO = () => [
   { label: 'Projeto', items: [
     { id: 'novo', label: 'Novo', run: () => novoProjeto() },
     { id: 'abrir', label: 'Abrir', run: () => abrir() },
@@ -358,27 +457,22 @@ const ARQUIVO = [
   ] },
   { label: 'Relatórios', items: [{ id: 'exportar', label: 'Relatório HTML', run: () => exportarRelatorioCompleto() }] },
 ];
-const RIBBON_LABEL = Object.fromEntries(RIBBON.flatMap((t) => t.groups.flatMap((g) => g.items.filter((i) => i.tool).map((i) => [i.id, i.label]))));
-let currentTab = 'Elétrico';
+const todosItens = () => [...RIBBON.flatMap((t) => t.groups()), ...Object.values(GRUPOS_LANCAMENTO).flat()].flatMap((g) => g.items.flatMap((i) => [i, ...(i.menu || [])]));
+const RIBBON_LABEL = {};
+let currentTab = 'LANÇAMENTO';
 
 function renderRibbon() {
   const tabs = $('#ribbon-tabs');
   tabs.innerHTML = '';
-  const fileBtn = document.createElement('button');
-  fileBtn.textContent = 'Arquivo';
-  fileBtn.className = 'file' + (currentTab === 'Arquivo' ? ' active' : '');
-  fileBtn.onclick = () => { currentTab = 'Arquivo'; renderRibbon(); };
-  tabs.appendChild(fileBtn);
-  for (const t of RIBBON) {
+  for (const nome of ['ARQUIVO', ...RIBBON.map((t) => t.tab)]) {
     const b = document.createElement('button');
-    b.textContent = t.tab;
-    if (t.tab === currentTab) b.className = 'active';
-    b.onclick = () => { currentTab = t.tab; renderRibbon(); };
+    b.textContent = nome;
+    b.className = (nome === 'ARQUIVO' ? 'file' : '') + (nome === currentTab ? ' active' : '');
+    b.onclick = () => { currentTab = nome; renderRibbon(); };
     tabs.appendChild(b);
   }
-  const groups = currentTab === 'Arquivo' ? ARQUIVO : RIBBON.find((t) => t.tab === currentTab).groups;
-  const foco = { Estrutural: 'est', 'Elétrico': 'ele', 'Hidrossanitário': 'hid', SPDA: 'spda' }[currentTab] || null;
-  if (store.settings.foco !== foco) { store.settings.foco = foco; plan.render(); }
+  const groups = currentTab === 'ARQUIVO' ? ARQUIVO() : RIBBON.find((t) => t.tab === currentTab).groups();
+  for (const it of todosItens()) if (it.tool && !RIBBON_LABEL[it.id]) RIBBON_LABEL[it.id] = it.label;
   const rb = $('#ribbon');
   rb.innerHTML = '';
   for (const g of groups) {
@@ -386,16 +480,22 @@ function renderRibbon() {
     ge.className = 'group';
     const items = document.createElement('div');
     items.className = 'group-items';
+    let col = null;
     for (const it of g.items) {
-      if (it.field) { items.appendChild(campoRibbon(it.field)); continue; }
+      if (it.field) { col = null; items.appendChild(campoRibbon(it.field)); continue; }
       const b = document.createElement('button');
-      b.className = 'rb';
-      b.innerHTML = ICONS[it.id] + `<span>${esc(it.label)}</span>`;
+      b.className = it.small ? 'sb' : 'rb';
+      b.innerHTML = ICONS[it.id] + `<span>${esc(it.label)}</span>` + (it.menu ? '<span class="dd">▼</span>' : '');
       b.title = it.label;
       if (it.tool) { b.dataset.tool = it.id; if (plan.tool === it.id) b.classList.add('active'); b.onclick = () => store.setTool(it.id); }
+      else if (it.menu) b.onclick = () => abrirMenu(b, it.menu);
       else b.onclick = it.run;
       if (it.active?.()) b.classList.add('active');
-      items.appendChild(b);
+      if (it.small) {
+        // botões pequenos empilham em colunas de três
+        if (!col || col.children.length === 3) { col = document.createElement('div'); col.className = 'col'; items.appendChild(col); }
+        col.appendChild(b);
+      } else { col = null; items.appendChild(b); }
     }
     ge.appendChild(items);
     const l = document.createElement('div');
@@ -407,24 +507,82 @@ function renderRibbon() {
   syncCircuitSelect();
 }
 
+function abrirMenu(btn, itens) {
+  const m = $('#menu');
+  m.innerHTML = itens.map((it, i) => `<button data-i="${i}">${ICONS[it.id] || ''}<span>${esc(it.label)}</span></button>`).join('');
+  const r = btn.getBoundingClientRect();
+  Object.assign(m.style, { left: r.left + 'px', top: r.bottom + 1 + 'px' });
+  m.hidden = false;
+  m.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const it = itens[Number(b.dataset.i)];
+    m.hidden = true;
+    if (it.tool) store.setTool(it.id); else it.run?.();
+  };
+}
+window.addEventListener('mousedown', (e) => { if (!e.target.closest('#menu') && !e.target.closest('.rb, .sb')) $('#menu').hidden = true; });
+
 function campoRibbon(tipo) {
   const f = document.createElement('div');
   f.className = 'rb-field';
-  if (tipo === 'circuito-ativo') {
-    f.innerHTML = '<label>Circuito ativo</label><select id="sel-circuito"></select><label>Tipo / tensão</label><span id="circ-info" style="color:var(--text)"></span>';
+  if (tipo === 'rede') {
+    const pos = [['', '-'], [0.3, 'Baixa (0,30)'], [1.1, 'Média (1,10)'], [2.2, 'Alta (2,20)'], ['teto', 'Teto']];
+    f.innerHTML = `<label>Rede</label><select id="sel-rede">${REDES.map(([v, n]) => `<option value="${v}"${store.rede === v ? ' selected' : ''}>${n}</option>`).join('')}</select>
+      <label>Altura</label><input id="in-altura" type="number" step="0.05" placeholder="padrão do ponto" value="${store.settings.altura ?? ''}">
+      <label>Posição</label><select id="sel-pos">${pos.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select>`;
+    f.querySelector('#sel-rede').onchange = (e) => trocarRede(e.target.value);
+    f.querySelector('#in-altura').onchange = (e) => { store.settings.altura = e.target.value === '' ? null : Number(e.target.value); };
+    f.querySelector('#sel-pos').onchange = (e) => {
+      const v = e.target.value;
+      store.settings.altura = v === '' ? null : v === 'teto' ? store.floor.peDireito : Number(v);
+      f.querySelector('#in-altura').value = store.settings.altura ?? '';
+    };
+  } else if (tipo === 'circuito-ativo') {
+    f.innerHTML = '<label>Circuito</label><select id="sel-circuito"></select><label>Tipo</label><span id="circ-info"></span>';
   } else if (tipo === 'spda-nivel') {
-    f.innerHTML = `<label>Nível de proteção</label><select id="sel-nivel">${Object.keys(NIVEIS).map((n) => `<option${store.project.spda.nivel === n ? ' selected' : ''}>${n}</option>`).join('')}</select>
-      <label>Malha / descidas</label><span>${NIVEIS[store.project.spda.nivel].malha} m / ${NIVEIS[store.project.spda.nivel].descidas} m</span>`;
+    f.innerHTML = `<label>Nível</label><select id="sel-nivel">${Object.keys(NIVEIS).map((n) => `<option${store.project.spda.nivel === n ? ' selected' : ''}>${n}</option>`).join('')}</select>
+      <label>Malha</label><span>${NIVEIS[store.project.spda.nivel].malha} × ${NIVEIS[store.project.spda.nivel].malha} m</span><label>Descidas</label><span>a cada ${NIVEIS[store.project.spda.nivel].descidas} m</span>`;
     f.querySelector('select').onchange = (e) => { store.commit('Nível SPDA', () => { store.project.spda.nivel = e.target.value; }); renderRibbon(); };
   } else if (tipo === 'chamadas') {
     const op = (d) => `<select data-d="${d}">${[['simples', 'Simples'], ['circulo', 'Círculo'], ['retangulo', 'Retângulo']].map(([v, l]) => `<option value="${v}"${store.settings.chamada[d] === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
-    f.style.minWidth = '260px';
-    f.innerHTML = `<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center">
-      <label>Elétrico</label>${op('ele')}<label>Hidrossanitário</label>${op('hid')}<label>Estrutural</label>${op('est')}</div>`;
+    f.innerHTML = `<label>Chamada elét.</label>${op('ele')}<label>Chamada hidr.</label>${op('hid')}<label>Chamada estr.</label>${op('est')}`;
     f.querySelectorAll('select').forEach((s) => (s.onchange = () => { store.settings.chamada[s.dataset.d] = s.value; plan.render(); }));
+  } else if (tipo === 'filtro') {
+    const op = [['todos', 'Todos os elementos'], ['arq', 'Paredes'], ['est', 'Estrutura'], ['ele', 'Elétrico'], ['hid', 'Hidrossanitário'], ['desenho', 'Desenho (linhas e textos)']];
+    f.innerHTML = `<label>Classe</label><select id="sel-filtro">${op.map(([v, n]) => `<option value="${v}"${store.settings.filtro === v ? ' selected' : ''}>${n}</option>`).join('')}</select>
+      <label></label><button class="btn" id="sel-apenas" style="min-width:0;padding:1px 8px">Selecionar apenas</button>`;
+    f.querySelector('#sel-filtro').onchange = (e) => { store.settings.filtro = e.target.value; log(`Filtro de seleção: ${e.target.selectedOptions[0].text}.`); };
+    f.querySelector('#sel-apenas').onclick = () => selecionarTudo(true);
+  } else if (tipo === 'fundo3d') {
+    const op = [['#f4f6f9', 'Claro'], ['#ffffff', 'Branco'], ['#c9d3de', 'Cinza'], ['#20262d', 'Escuro']];
+    f.innerHTML = `<label>Fundo</label><select>${op.map(([v, n]) => `<option value="${v}"${store.settings.fundo3d === v ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+    f.querySelector('select').onchange = (e) => { store.settings.fundo3d = e.target.value; view3d.setFundo(e.target.value); };
+  } else if (tipo === 'corte') {
+    const max = Math.max(...store.project.pavimentos.map((p) => p.cota + p.peDireito)) + 1;
+    const h = store.settings.corte ?? max;
+    f.classList.add('wide');
+    f.innerHTML = `<label>Ativo</label><input type="checkbox" id="corte-on" style="height:auto;justify-self:start" ${store.settings.corte != null ? 'checked' : ''}>
+      <label>Altura</label><input type="range" id="corte-h" min="0" max="${max.toFixed(1)}" step="0.05" value="${h}"><label></label><span id="corte-v">${fmt(h)} m</span>`;
+    const aplica = () => {
+      const on = f.querySelector('#corte-on').checked, v = Number(f.querySelector('#corte-h').value);
+      store.settings.corte = on ? v : null;
+      f.querySelector('#corte-v').textContent = `${fmt(v)} m`;
+      view3d.setCorte(store.settings.corte);
+      if (on && docs.ativo?.tipo !== '3d') abrirDoc('3d');
+    };
+    f.querySelector('#corte-on').onchange = aplica;
+    f.querySelector('#corte-h').oninput = aplica;
   }
   return f;
 }
+
+function trocarRede(r) {
+  store.rede = r;
+  // a janela de planta ativa passa a mostrar a rede escolhida
+  if (docs.ativo && docs.ativo.tipo !== '3d') abrirDoc(r, docs.ativo.pavId); else renderRibbon();
+}
+function syncRede() { const s = $('#sel-rede'); if (s) s.value = store.rede; }
 
 function syncCircuitSelect() {
   const sel = $('#sel-circuito');
@@ -433,55 +591,93 @@ function syncCircuitSelect() {
   sel.value = store.activeCircuitId || '';
   sel.onchange = () => { store.activeCircuitId = sel.value; syncCircuitSelect(); plan.render(); renderTree(); store.refreshHint(); };
   const c = store.activeCircuit;
-  $('#circ-info').innerHTML = c ? `<span class="swatch" style="display:inline-block;background:${corCircuito(store.project, c.id)}"></span> ${c.tipo} · ${c.tensao} V` : '-';
+  $('#circ-info').innerHTML = c ? `<span class="swatch" style="background:${corCircuito(store.project, c.id)}"></span> ${c.tipo} · ${c.tensao} V` : '-';
 }
 
-// ---------------------------------------------------------------- árvore
-const collapsed = new Set(['edif-ele', 'edif-hid']);
+// ---------------------------------------------------------------- painel lateral
+const PAINEIS = [['edificacao', 'edificacao', 'Edificação'], ['propriedades', 'propriedades', 'Propriedades'], ['camadas', 'camadas', 'Camadas'], ['mensagens', 'mensagens', 'Mensagens']];
+let painelAtual = 'edificacao';
+function mostrarPainel(nome) {
+  painelAtual = nome;
+  $('#workspace').classList.remove('dock-hidden');
+  document.querySelectorAll('#dock-panels .panel').forEach((p) => p.classList.toggle('on', p.dataset.panel === nome));
+  document.querySelectorAll('#dock-switch button').forEach((b) => b.classList.toggle('on', b.dataset.p === nome));
+  $('#dock-title').textContent = PAINEIS.find((p) => p[0] === nome)[2];
+  if (nome === 'camadas') renderCamadas();
+  if (nome === 'mensagens') $('#msgs').scrollTop = 1e9;
+}
+$('#dock-switch').innerHTML = PAINEIS.map(([p, ic, t]) => `<button data-p="${p}" title="${t}">${ICONS[ic]}</button>`).join('');
+$('#dock-switch').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) mostrarPainel(b.dataset.p); });
+$('#dock-close').onclick = () => $('#workspace').classList.add('dock-hidden');
+
+function renderCamadas() {
+  const f = store.floor.fundo;
+  const vis = store.settings.vis;
+  const disc = Object.entries(DISCIPLINAS).map(([d, n]) => `<label class="camada-row"><input type="checkbox" data-d="${d}" ${vis[d] !== false ? 'checked' : ''}>${esc(n)}</label>`).join('');
+  const ref = f ? `<div class="camada-head">Referência: ${esc(f.arquivo)}</div>
+    <div class="camada-row"><button class="btn" data-todas="1" style="min-width:0">Todas</button><button class="btn" data-todas="0" style="min-width:0">Nenhuma</button></div>
+    ${f.camadas.map((c, i) => `<label class="camada-row"><input type="checkbox" data-i="${i}" ${c.vis ? 'checked' : ''}><span class="swatch" style="background:${corAci(c.cor)}"></span>${esc(c.nome)}</label>`).join('')}`
+    : `<div class="empty">Sem desenho de referência no ${esc(store.floor.nome)}. Use ELEMENTOS › Importar DWG/DXF.</div>`;
+  $('#camadas').innerHTML = `<div class="camada-head">Disciplinas</div>${disc}${ref}`;
+  $('#camadas').onchange = (e) => {
+    const t = e.target;
+    if (t.dataset.d) { store.settings.vis[t.dataset.d] = t.checked; plan.render(); view3d.invalidate(); renderRibbon(); }
+    if (t.dataset.i != null && f) { f.camadas[Number(t.dataset.i)].vis = t.checked; store.dirty = true; plan.render(); renderTree(); }
+  };
+  $('#camadas').onclick = (e) => {
+    const b = e.target.closest('[data-todas]');
+    if (!b || !f) return;
+    for (const c of f.camadas) c.vis = b.dataset.todas === '1';
+    store.dirty = true; plan.render(); renderCamadas();
+  };
+}
+
+// ---------------------------------------------------------------- árvore Edificação
+const collapsed = new Set(['circ', 'redes']);
 function renderTree() {
   const p = store.project;
   const node = (key, icon, label, opts = {}) => {
     const kids = opts.children;
     const open = kids && !collapsed.has(key);
-    return `<li><div class="node${opts.sel ? ' sel' : ''}" data-key="${esc(key)}"${opts.act ? ` data-act="${esc(opts.act)}"` : ''}>
-      <span class="tw">${kids ? (open ? '▼' : '▶') : ''}</span>${icon}<span>${esc(label)}</span>${opts.badge != null ? `<span class="badge">${esc(opts.badge)}</span>` : ''}</div>
+    return `<li><div class="node${opts.sel ? ' sel' : ''}${opts.aberto ? ' open-view' : ''}" data-key="${esc(key)}"${opts.act ? ` data-act="${esc(opts.act)}"` : ''}${opts.dbl ? ` data-dbl="${esc(opts.dbl)}"` : ''}>
+      <span class="tw">${kids ? (open ? '▼' : '▶') : ''}</span>${icon}<span class="lbl">${esc(label)}</span>${opts.badge != null ? `<span class="badge">${esc(opts.badge)}</span>` : ''}</div>
       ${kids && open ? `<ul>${kids}</ul>` : ''}</li>`;
   };
   const sw = (cor) => `<span class="swatch" style="background:${cor}"></span>`;
-  const pavs = p.pavimentos.map((pv, i) => {
-    const qtd = (t) => pv.elementos.filter((e) => e.tipo === t).length;
-    const grupo = (k, ic, nome, tipos) => node(`pv${i}-${k}`, ICONS[ic], nome, {
-      badge: tipos.reduce((s, t) => s + qtd(t), 0), act: `floor:${i}`,
-      children: tipos.filter((t) => qtd(t)).map((t) => node(`pv${i}-${t}`, ICONS[t] || ICONS.camada, TIPOS[t].nome, { badge: qtd(t), act: `floor:${i}` })).join('') || undefined,
+  const conta = (pv) => ({
+    arq: pv.paredes.length + (pv.desenho?.length || 0),
+    est: pv.vigas.length + pv.lajes.length + pv.elementos.filter((e) => e.tipo === 'pilar').length,
+    ele: pv.elementos.filter((e) => TIPOS[e.tipo]?.disc === 'ele').length,
+    af: pv.elementos.filter((e) => TIPOS[e.tipo]?.peso != null || e.tipo === 'reservatorio').length,
+    esg: pv.elementos.filter((e) => TIPOS[e.tipo]?.uhc != null || e.tipo === 'ci').length,
+  });
+  const pavs = [...p.pavimentos].reverse().map((pv) => {
+    const i = p.pavimentos.indexOf(pv);
+    const n = conta(pv);
+    const vistas = ['arq', 'est', 'ele', 'af', 'esg', 'spda'].map((t) => {
+      const aberto = docs.lista.some((d) => d.tipo === t && d.pavId === pv.id);
+      const ativo = docs.ativo?.tipo === t && docs.ativo.pavId === pv.id;
+      return node(`pv${i}-${t}`, ICONS[VISTAS[t].icon], VISTAS[t].nome, { badge: n[t] ?? (t === 'spda' && store.spda.ativo ? '' : null), dbl: `vista:${t}:${pv.id}`, act: `vista:${t}:${pv.id}`, sel: ativo, aberto });
     });
-    const kids = [
-      node(`pv${i}-par`, ICONS.parede, 'Paredes', { badge: pv.paredes.length, act: `floor:${i}` }),
-      node(`pv${i}-est`, ICONS.pilar, 'Estrutura', { act: `floor:${i}`, children: [
-        node(`pv${i}-pil`, ICONS.pilar, 'Pilares', { badge: qtd('pilar'), act: `floor:${i}` }),
-        node(`pv${i}-vig`, ICONS.viga, 'Vigas', { badge: pv.vigas.length, act: `floor:${i}` }),
-        node(`pv${i}-laj`, ICONS.laje, 'Lajes', { badge: pv.lajes.length, act: `floor:${i}` }),
-      ].join('') }),
-      grupo('ele', 'raio', 'Elétrico', ['qd', 'luz', 'interruptor', 'tug', 'tue']),
-      grupo('hid', 'hidro', 'Hidrossanitário', ['reservatorio', 'ci', 'bacia', 'lavatorio', 'chuveiro', 'pia', 'tanque', 'mlr']),
-      pv.fundo ? node(`pv${i}-ref`, ICONS.camadas, `Ref.: ${pv.fundo.arquivo}`, { badge: pv.fundo.camadas.filter((c) => c.vis).length + '/' + pv.fundo.camadas.length, act: 'camadas' }) : '',
-    ].join('');
-    return node(`pv${i}`, pv.intermediario ? ICONS.nivel : ICONS.camada, `${pv.nome} (${fmt(pv.cota)} m)`, { children: kids, sel: i === store.floorIdx, act: `floor:${i}` });
+    if (pv.fundo) vistas.push(node(`pv${i}-ref`, ICONS.importarCad, pv.fundo.arquivo, { badge: `${pv.fundo.camadas.filter((c) => c.vis).length}/${pv.fundo.camadas.length}`, act: 'camadas' }));
+    return node(`pv${i}`, pv.intermediario ? ICONS.nivel : ICONS.camada, `${pv.nome}`, { children: vistas.join(''), sel: i === store.floorIdx && docs.ativo?.tipo !== '3d', act: `pav:${i}`, badge: `${fmt(pv.cota)} m` });
   }).join('');
   const circs = store.results.map((r) => node(`c-${r.circuito.id}`, sw(corCircuito(p, r.circuito.id)), r.circuito.nome, {
     badge: `${Math.round(r.potencia)} VA`, sel: r.circuito.id === store.activeCircuitId, act: `circ:${r.circuito.id}`,
   })).join('');
   const hid = store.hid;
   const redes = [
-    node('af', sw('#1593a6'), 'Água fria', { badge: `${hid.af.segmentos.length} trechos`, act: 'rel:af' }),
-    node('esg', sw('#8a5a2b'), 'Esgoto', { badge: `${hid.esg.segmentos.length} trechos`, act: 'rel:esg' }),
+    node('rel-af', sw('#1593a6'), 'Água fria', { badge: `${hid.af.segmentos.length} trechos`, act: 'rel:af' }),
+    node('rel-esg', sw('#8a5a2b'), 'Esgoto', { badge: `${hid.esg.segmentos.length} trechos`, act: 'rel:esg' }),
   ].join('');
-  const sp = store.spda;
   $('#tree').innerHTML = `<div class="tree"><ul>${node('root', ICONS.predio, p.nome, {
-    children: node('edif', ICONS.pasta, 'Edificação', { children: pavs })
+    act: 'projeto',
+    children: pavs
+      + node('m3d', ICONS.vista3d, 'Modelos 3D', { children: node('v3d', ICONS.vista3d, 'Visão 3D geral', { dbl: 'vista:3d', act: 'vista:3d', sel: docs.ativo?.tipo === '3d' }) })
       + node('circ', ICONS.raio, 'Circuitos', { children: circs || '<li class="empty">Nenhum circuito.</li>', badge: p.circuitos.length })
       + node('redes', ICONS.hidro, 'Redes hidráulicas', { children: redes })
-      + node('spda', ICONS.spda, 'SPDA', { badge: sp.ativo ? `nível ${p.spda.nivel}` : 'desativado', act: 'rel:spda' }),
-  })}</ul></div>`;
+      + node('spda', ICONS.spda, 'SPDA', { badge: store.spda.ativo ? `nível ${p.spda.nivel}` : 'desativado', act: 'rel:spda' }),
+  })}</ul></div><div class="tree-hint">Duplo clique abre a janela do pavimento.</div>`;
 }
 
 $('#tree').addEventListener('click', (e) => {
@@ -493,24 +689,61 @@ $('#tree').addEventListener('click', (e) => {
     return renderTree();
   }
   const act = n.dataset.act || '';
-  if (act.startsWith('floor:')) setFloor(Number(act.slice(6)));
-  else if (act.startsWith('circ:')) {
+  if (act.startsWith('pav:')) {
+    store.selection = { kind: 'pavimento', ref: store.project.pavimentos[Number(act.slice(4))] };
+    renderProps(); mostrarPainelSeSelecao();
+  } else if (act.startsWith('circ:')) {
     store.activeCircuitId = act.slice(5);
     store.selection = { kind: 'circuito', ref: store.activeCircuit };
-    syncCircuitSelect(); plan.render(); renderTree(); renderProps(); store.refreshHint();
+    syncCircuitSelect(); plan.render(); renderTree(); renderProps();
+  } else if (act === 'camadas') mostrarPainel('camadas');
+  else if (act === 'projeto') { store.selection = { kind: 'projeto' }; renderProps(); }
+});
+$('#tree').addEventListener('dblclick', (e) => {
+  const n = e.target.closest('.node');
+  const act = n?.dataset.dbl || n?.dataset.act || '';
+  if (act.startsWith('vista:')) {
+    const [, tipo, pavId] = act.split(':');
+    abrirDoc(tipo, pavId);
   } else if (act === 'rel:af') relatorioAguaFria();
   else if (act === 'rel:esg') relatorioEsgoto();
   else if (act === 'rel:spda') relatorioSpda();
-  else if (act === 'camadas') dialogoCamadas();
-  else if (key === 'root') { store.selection = { kind: 'projeto' }; renderProps(); }
+  else if (act.startsWith('pav:')) abrirDoc(docs.ativo?.tipo !== '3d' ? docs.ativo.tipo : 'ele', store.project.pavimentos[Number(act.slice(4))].id);
 });
 
 function setFloor(i) {
-  store.floorIdx = i;
+  const tipo = docs.ativo && docs.ativo.tipo !== '3d' ? docs.ativo.tipo : 'arq';
+  abrirDoc(tipo, store.project.pavimentos[i].id);
   store.selection = { kind: 'pavimento', ref: store.floor };
-  plan.start = null;
-  renderTree(); renderProps(); updateTitle(); plan.render(); view3d.invalidate();
+  renderProps();
 }
+function mostrarPainelSeSelecao() {
+  if (painelAtual !== 'propriedades') mostrarPainel('propriedades');
+}
+
+// ---------------------------------------------------------------- barra de status
+const ESCALAS = [20, 25, 50, 75, 100, 125, 200, 250, 500, 1000];
+function renderStatus() {
+  const t = [
+    ['enquadrar', 'Zoom extensão', () => plan.zoomExtents()], ['zoomMais', 'Aproximar', () => plan.zoomPor(1.25)], ['zoomMenos', 'Afastar', () => plan.zoomPor(0.8)],
+    null,
+    ['grade', 'Grade (F7)', () => toggleSetting('grid'), 'grid'], ['ponto', 'Snap (F9)', () => toggleSetting('snap'), 'snap'], ['orto', 'Ortogonal (F8)', () => toggleSetting('orto'), 'orto'],
+    null,
+    ['filtro', 'Filtro de seleção', () => { currentTab = 'DESENHOS'; renderRibbon(); }],
+  ];
+  $('#st-tools').innerHTML = t.map((x, i) => (x ? `<button data-i="${i}" title="${x[1]}" class="${x[3] && store.settings[x[3]] ? 'on' : ''}">${ICONS[x[0]]}</button>` : '<span class="st-sep"></span>')).join('');
+  $('#st-tools').onclick = (e) => { const b = e.target.closest('button'); if (b) t[Number(b.dataset.i)][2](); };
+}
+function syncEscala() {
+  const sel = $('#st-escala');
+  const n = plan.escala;
+  const lista = ESCALAS.includes(n) ? ESCALAS : [...ESCALAS, n].sort((a, b) => a - b);
+  if (sel.dataset.n !== String(n)) {
+    sel.innerHTML = lista.map((v) => `<option value="${v}"${v === n ? ' selected' : ''}>1:${v}</option>`).join('');
+    sel.dataset.n = String(n);
+  }
+}
+$('#st-escala').onchange = (e) => { plan.setEscala(Number(e.target.value)); store.settings.escala = Number(e.target.value); };
 
 // ---------------------------------------------------------------- propriedades
 function renderProps() {
@@ -521,15 +754,20 @@ function renderProps() {
   const inp = (k, v, type = 'number', step = '0.01') => `<input data-k="${k}" type="${type}" ${type === 'number' ? `step="${step}"` : ''} value="${esc(v)}">`;
   const opts = (k, v, list) => `<select data-k="${k}">${list.map(([val, lab]) => `<option value="${esc(val)}"${String(val) === String(v) ? ' selected' : ''}>${esc(lab)}</option>`).join('')}</select>`;
   const th = (t) => `<tr><th colspan="2">${esc(t)}</th></tr>`;
-  const avisos = (lista) => (lista?.length ? `<tr><td colspan="2" style="color:var(--danger)">${lista.map(esc).join('<br>')}</td></tr>` : '');
+  const avisos = (lista) => (lista?.length ? `<tr><td colspan="2" class="aviso">${lista.map(esc).join('<br>')}</td></tr>` : '');
   let html = '';
 
   if (!sel) {
-    html = `<div class="empty">Nada selecionado.<br>Use <b>Selecionar</b> e clique num elemento, ou arraste no vazio para <b>selecionar por área</b> (da direita para a esquerda pega o que toca). No 3D: Shift + arrastar.</div>`;
+    const f = store.floor;
+    html = `<table class="props">${th('Desenho')}${row('Janela', ro(docs.ativo ? (docs.ativo.tipo === '3d' ? 'Visão 3D' : `${f.nome} - ${VISTAS[docs.ativo.tipo].nome}`) : '-'))}
+      ${row('Pavimento', ro(f.nome))}${row('Cota', ro(`${fmt(f.cota)} m`))}${row('Pé-direito', ro(`${fmt(f.peDireito)} m`))}
+      ${th('Escala')}${row('Planta baixa', ro(`1:${plan.escala}`))}
+      ${th('Projeto')}${row('Título', ro(store.project.nome))}${row('Autor', ro(store.project.autor || '-'))}${row('Data', ro(new Date().toLocaleDateString('pt-BR')))}
+      ${th('Seleção')}<tr><td colspan="2" class="nota">Clique num elemento, ou arraste no vazio para selecionar por área (da direita para a esquerda pega o que toca). No 3D: Shift + arrastar.</td></tr></table>`;
   } else if (sel.kind === 'multi') {
     const cont = {};
     for (const it of sel.itens) {
-      const nome = it.kind === 'elemento' ? TIPOS[it.ref.tipo].nome : { parede: 'Parede', viga: 'Viga', laje: 'Laje' }[it.kind];
+      const nome = it.kind === 'elemento' ? TIPOS[it.ref.tipo].nome : { parede: 'Parede', viga: 'Viga', laje: 'Laje', desenho: 'Desenho (linhas e textos)' }[it.kind];
       cont[nome] = (cont[nome] || 0) + 1;
     }
     html = `<table class="props">${th(`Seleção (${sel.itens.length})`)}${Object.entries(cont).map(([k, v]) => row(k, ro(v))).join('')}</table>
@@ -555,10 +793,16 @@ function renderProps() {
         if (t.peso != null) html += `${row('Peso (água fria)', ro(fmt(t.peso, 1)))}${row('UHC (esgoto)', ro(t.uhc))}${row('DN mínimo esgoto', ro(`${t.dnEsg} mm`))}`;
         const pt = store.hid.af.pontos.find((x) => x.no.el === e);
         if (pt) html += `${th('Água fria')}${row('Pressão dinâmica', `<span class="ro" style="color:${pt.pressao < 1 ? 'var(--danger)' : 'var(--ok)'}">${fmt(pt.pressao, 2)} mca</span>`)}`;
-        if (e.tipo === 'reservatorio') html += `<tr><td colspan="2" style="color:var(--muted)">A altura é a cota do fundo do reservatório em relação ao piso do pavimento.</td></tr>`;
+        if (e.tipo === 'reservatorio') html += `<tr><td colspan="2" class="nota">A altura é a cota do fundo do reservatório em relação ao piso do pavimento.</td></tr>`;
       }
     }
     html += '</table>';
+  } else if (sel.kind === 'desenho') {
+    const d = sel.ref;
+    const nome = { linha: 'Linha', ret: 'Retângulo', circ: 'Círculo', texto: 'Texto' }[d.t];
+    html = `<table class="props">${th(nome)}${d.t === 'texto' ? row('Texto', inp('texto', d.texto, 'text')) + row('Altura do texto (m)', inp('h', d.h)) : ''}
+      ${'x' in d ? row('X (m)', inp('x', d.x)) + row('Y (m)', inp('y', d.y)) : row('X inicial', inp('x1', d.x1)) + row('Y inicial', inp('y1', d.y1)) + row('X final', inp('x2', d.x2)) + row('Y final', inp('y2', d.y2))}
+      ${d.t === 'circ' ? row('Raio (m)', inp('r', d.r)) : ''}${d.t === 'linha' ? row('Comprimento', ro(`${fmt(Math.hypot(d.x2 - d.x1, d.y2 - d.y1))} m`)) : ''}</table>`;
   } else if (sel.kind === 'parede') {
     const w = sel.ref;
     html = `<table class="props">${th('Parede')}${row('Identificador', ro(w.id))}${row('Comprimento (m)', ro(fmt(Math.hypot(w.x2 - w.x1, w.y2 - w.y1))))}
@@ -601,6 +845,14 @@ function renderProps() {
       ${th('Estrutura')}<tr><td>Tensão admissível do solo (kPa)</td><td><input data-k="sigmaSolo" data-obj="estrutura" type="number" step="10" value="${store.project.estrutura.sigmaSolo}"></td></tr></table>`;
   }
   box.innerHTML = html;
+  // categorias recolhíveis, como numa grade de propriedades
+  box.querySelectorAll('.props th').forEach((thEl) => {
+    thEl.onclick = () => {
+      thEl.classList.toggle('fechado');
+      let tr = thEl.parentElement.nextElementSibling;
+      while (tr && !tr.querySelector('th')) { tr.hidden = thEl.classList.contains('fechado'); tr = tr.nextElementSibling; }
+    };
+  });
   const target = sel?.kind === 'projeto' ? store.project : sel?.ref;
   box.querySelectorAll('[data-k]').forEach((el) => {
     el.addEventListener('change', () => {
@@ -658,7 +910,7 @@ function novoPavimento() {
     store.project.pavimentos.push({
       id: store.uid('PV'), nome: n === 1 ? 'Superior' : `Pavimento ${n + 1}`,
       cota: Math.round((ult.cota + ult.peDireito + 0.12) * 100) / 100, peDireito: ult.peDireito,
-      paredes: ult.paredes.map((w) => ({ ...w, id: store.uid('P') })), elementos: [], vigas: [], lajes: [],
+      paredes: ult.paredes.map((w) => ({ ...w, id: store.uid('P') })), elementos: [], vigas: [], lajes: [], desenho: [],
     });
     normalizar(store.project);
   });
@@ -666,14 +918,14 @@ function novoPavimento() {
   log(`Pavimento "${store.floor.nome}" criado com as paredes do pavimento abaixo.`, 'ok');
 }
 
-function novoNivelIntermediario() {
+async function novoNivelIntermediario() {
   const base = store.floor;
-  const nome = prompt('Nome do nível intermediário:', `Mezanino ${base.nome}`);
+  const nome = await pedirTexto('Nível intermediário', 'Nome do nível:', `Mezanino ${base.nome}`);
   if (!nome) return;
   let novo;
   store.commit('Nível intermediário', () => {
     novo = { id: store.uid('PV'), nome, intermediario: true, cota: Math.round((base.cota + base.peDireito / 2) * 100) / 100,
-      peDireito: Math.round((base.peDireito / 2) * 100) / 100, paredes: [], elementos: [], vigas: [], lajes: [] };
+      peDireito: Math.round((base.peDireito / 2) * 100) / 100, paredes: [], elementos: [], vigas: [], lajes: [], desenho: [] };
     store.project.pavimentos.push(novo);
     normalizar(store.project);
   });
@@ -707,28 +959,22 @@ function toggleSpda() {
 
 function toggleSetting(k) {
   store.settings[k] = !store.settings[k];
-  $('#st-grid').classList.toggle('on', store.settings.grid);
-  $('#st-snap').classList.toggle('on', store.settings.snap);
-  $('#st-orto').classList.toggle('on', store.settings.orto);
-  renderRibbon();
+  renderStatus();
   plan.render();
 }
 function toggleVis(d) {
   store.settings.vis[d] = !store.settings.vis[d];
   renderRibbon(); plan.render(); view3d.invalidate();
+  if (painelAtual === 'camadas') renderCamadas();
 }
-$('#st-grid').onclick = () => toggleSetting('grid');
-$('#st-snap').onclick = () => toggleSetting('snap');
-$('#st-orto').onclick = () => toggleSetting('orto');
 
 function setView(v) {
-  document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   $('#plan').hidden = v !== '2d';
   $('#view3d').hidden = v !== '3d';
   $('#hint').hidden = v !== '2d';
   if (v === '3d') view3d.show(); else { view3d.hide(); plan.resize(); }
 }
-document.querySelectorAll('#view-tabs button').forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+
 
 // ---------------------------------------------------------------- DWG / DXF
 async function importarCad() {
@@ -832,6 +1078,10 @@ function carregar(projeto, filePath) {
   store.undo = []; store.redo = [];
   store.filePath = filePath;
   store.activeCircuitId = projeto.circuitos[0]?.id || null;
+  store.calc();
+  docs.lista = [];
+  abrirDoc(store.rede || 'ele', store.floor.id);
+  docs.lista.push({ id: ++docSeq, tipo: '3d', pavId: null });
   store.changed(true);
   store.dirty = false;
   updateTitle(); renderRibbon();
@@ -843,8 +1093,9 @@ async function novoProjeto() {
     { id: 'C1', numero: 1, nome: 'C1 Iluminação', tipo: 'ILUM', tensao: 127 },
     { id: 'C2', numero: 2, nome: 'C2 TUG', tipo: 'TUG', tensao: 127 },
   ], pavimentos: [{ id: 'PV1', nome: 'Térreo', cota: 0, peDireito: 2.8, paredes: [], elementos: [] }] }, null);
+  abrirDoc('arq', store.floor.id);
   store.setTool('parede');
-  currentTab = 'Arquitetura'; renderRibbon();
+  currentTab = 'ELEMENTOS'; renderRibbon();
   log('Novo projeto. Desenhe as paredes ou importe um DWG/DXF da arquitetura.', 'ok');
 }
 async function abrir() {
@@ -1031,24 +1282,77 @@ ${sec('Hidrossanitário: água fria', af)}${sec('Hidrossanitário: esgoto', eg)}
   host.exportFile(doc, 'relatorio-projeto.html', 'html', 'Página HTML').then((x) => x && log(`Exportado: ${x}`, 'ok'));
 }
 
+// ---------------------------------------------------------------- comandos de edição
+function pedirTexto(titulo, rotulo, valor = '') {
+  // o Electron não implementa window.prompt; usa o modal do app
+  return new Promise((resolve) => {
+    let ok = false;
+    modal(titulo, `<label style="display:block;margin-bottom:6px">${esc(rotulo)}</label><input id="pt-in" style="width:100%;height:26px" value="${esc(valor)}">`, [
+      { label: 'OK', primary: true, run: () => { ok = true; const v = $('#pt-in').value.trim(); closeModal(); resolve(v || null); } },
+    ]);
+    const inp = $('#pt-in');
+    inp.focus(); inp.select();
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { ok = true; const v = inp.value.trim(); closeModal(); resolve(v || null); } };
+    const obs = new MutationObserver(() => { if ($('#modal').hidden) { obs.disconnect(); if (!ok) resolve(null); } });
+    obs.observe($('#modal'), { attributes: true, attributeFilter: ['hidden'] });
+  });
+}
+store.pedirTexto = pedirTexto;
+
+// rotaciona 90° (anti-horário na tela) ou espelha a seleção em torno do centro dela
+function transformar(op) {
+  const itens = store.selItens();
+  if (!itens.length) return log('Selecione os elementos primeiro (arraste no vazio para selecionar por área).', 'warn');
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const ext = (x, y) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); };
+  for (const { ref: r } of itens) { if ('x' in r) ext(r.x, r.y); else { ext(r.x1, r.y1); ext(r.x2, r.y2); } }
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const r3 = (v) => Math.round(v * 1000) / 1000;
+  const T = (x, y) => op === 'rot' ? [r3(cx + (y - cy)), r3(cy - (x - cx))] : op === 'espH' ? [r3(2 * cx - x), y] : [x, r3(2 * cy - y)];
+  store.commit(op === 'rot' ? 'Rotacionar' : 'Espelhar', () => {
+    for (const { kind, ref: r } of itens) {
+      if ('x' in r) {
+        [r.x, r.y] = T(r.x, r.y);
+        if (op === 'rot' && r.tipo === 'pilar') [r.b, r.h] = [r.h, r.b];
+      } else {
+        [r.x1, r.y1] = T(r.x1, r.y1); [r.x2, r.y2] = T(r.x2, r.y2);
+        if (kind === 'laje' || r.t === 'ret') {
+          [r.x1, r.x2] = [Math.min(r.x1, r.x2), Math.max(r.x1, r.x2)];
+          [r.y1, r.y2] = [Math.min(r.y1, r.y2), Math.max(r.y1, r.y2)];
+        }
+      }
+    }
+  });
+  log(`${itens.length} elemento(s) ${op === 'rot' ? 'rotacionado(s) 90°' : 'espelhado(s)'}.`, 'ok');
+}
+
+function selecionarTudo(soFiltro) {
+  const f = store.floor;
+  const todos = [...f.elementos.map((ref) => ({ kind: 'elemento', ref })), ...f.paredes.map((ref) => ({ kind: 'parede', ref })),
+    ...f.vigas.map((ref) => ({ kind: 'viga', ref })), ...f.lajes.map((ref) => ({ kind: 'laje', ref })), ...f.desenho.map((ref) => ({ kind: 'desenho', ref }))];
+  store.selectMany(soFiltro ? todos.filter((it) => plan.passaFiltro(it)) : todos, false);
+}
+
+function toggle3d(k) {
+  store.settings[k] = !store.settings[k];
+  view3d.invalidate();
+  renderRibbon();
+}
+
 // ---------------------------------------------------------------- atalhos e divisores
 window.addEventListener('keydown', (e) => {
   if (e.target.matches('input, select, textarea')) return;
   const k = e.key.toLowerCase();
   if (e.ctrlKey && k === 'z') { e.preventDefault(); store.doUndo(); }
   else if (e.ctrlKey && (k === 'y' || (e.shiftKey && k === 'z'))) { e.preventDefault(); store.doRedo(); }
-  else if (e.ctrlKey && k === 's') { e.preventDefault(); salvar(e.shiftKey); }
+  else if (e.ctrlKey && (k === 's' || k === 'b')) { e.preventDefault(); salvar(e.shiftKey); }
+  else if (e.key === 'F12') { e.preventDefault(); salvar(true); }
   else if (e.ctrlKey && k === 'o') { e.preventDefault(); abrir(); }
   else if (e.ctrlKey && k === 'n') { e.preventDefault(); novoProjeto(); }
   else if (e.ctrlKey && k === 'c') { e.preventDefault(); store.copy(); }
   else if (e.ctrlKey && k === 'v') { e.preventDefault(); store.paste(); }
-  else if (e.ctrlKey && k === 'a') {
-    e.preventDefault();
-    const f = store.floor;
-    store.selectMany([...f.elementos.map((ref) => ({ kind: 'elemento', ref })), ...f.paredes.map((ref) => ({ kind: 'parede', ref })),
-      ...f.vigas.map((ref) => ({ kind: 'viga', ref })), ...f.lajes.map((ref) => ({ kind: 'laje', ref }))], false);
-  }
-  else if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else plan.cancel(); }
+  else if (e.ctrlKey && k === 'a') { e.preventDefault(); selecionarTudo(true); }
+  else if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else { $('#menu').hidden = true; plan.cancel(); } }
   else if (e.key === 'Delete' && store.selItens().length) store.remove(store.selection);
   else if (e.key === 'F8') toggleSetting('orto');
   else if (e.key === 'F7') toggleSetting('grid');
@@ -1057,39 +1361,36 @@ window.addEventListener('keydown', (e) => {
 
 document.querySelectorAll('.splitter').forEach((sp) => {
   sp.addEventListener('mousedown', (e) => {
-    const left = sp.dataset.target === 'left';
     const ws = $('#workspace');
     const start = e.clientX;
-    const w0 = $(left ? '#left' : '#right').getBoundingClientRect().width;
-    const move = (ev) => {
-      const w = Math.max(160, Math.min(520, w0 + (left ? 1 : -1) * (ev.clientX - start)));
-      ws.style.setProperty(left ? '--lw' : '--rw', w + 'px');
-    };
+    const w0 = $('#right').getBoundingClientRect().width;
+    const move = (ev) => ws.style.setProperty('--rw', Math.max(200, Math.min(560, w0 - (ev.clientX - start))) + 'px');
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   });
 });
-$('#clear-log').onclick = () => ($('#log').innerHTML = '');
 
-$('#quick').innerHTML = [['novo', 'Novo'], ['abrir', 'Abrir'], ['salvar', 'Salvar'], ['importarCad', 'Importar DWG/DXF'], ['exportarCad', 'Exportar DWG/DXF'], ['desfazer', 'Desfazer'], ['refazer', 'Refazer']]
-  .map(([k, t]) => `<button data-q="${k}" title="${t}">${ICONS[k]}</button>`).join('');
-$('#quick').addEventListener('click', (e) => {
-  const q = e.target.closest('button')?.dataset.q;
-  ({ novo: novoProjeto, abrir, salvar: () => salvar(), importarCad, exportarCad: () => exportarCad(false), desfazer: () => store.doUndo(), refazer: () => store.doRedo() })[q]?.();
-});
+const QUICK = [['novo', 'Novo (Ctrl+N)', () => novoProjeto()], ['abrir', 'Abrir (Ctrl+O)', () => abrir()], ['salvar', 'Salvar (Ctrl+S)', () => salvar()], null,
+  ['importarCad', 'Importar DWG/DXF', () => importarCad()], ['exportarCad', 'Exportar DWG/DXF', () => exportarCad(false)], ['materiais', 'Lista de materiais', () => relatorioMateriais()], null,
+  ['desfazer', 'Desfazer (Ctrl+Z)', () => store.doUndo()], ['refazer', 'Refazer (Ctrl+Y)', () => store.doRedo()], null, ['vista3d', 'Visão 3D', () => abrirDoc('3d')]];
+$('#quick').innerHTML = QUICK.map((q, i) => (q ? `<button data-i="${i}" title="${q[1]}">${ICONS[q[0]]}</button>` : '<span class="qsep"></span>')).join('');
+$('#quick').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) QUICK[Number(b.dataset.i)][2](); });
 
 // ---------------------------------------------------------------- início
 const plan = new Plan2D($('#plan'), store);
 const view3d = new View3D($('#view3d'), store);
+store.onRender = syncEscala;
 store.calc();
+store.rede = 'ele';
+abrirDoc('ele', store.floor.id);
+docs.lista.push({ id: ++docSeq, tipo: '3d', pavId: null });
+renderDocTabs();
 renderRibbon();
-renderTree();
-renderProps();
-updateTitle();
+renderStatus();
+mostrarPainel('edificacao');
 store.setTool('selecionar');
 requestAnimationFrame(() => plan.zoomExtents());
 log('Vértice pronto. Projeto exemplo com arquitetura, estrutura, elétrico, hidrossanitário e SPDA.', 'ok');
-log('Dica: Arquivo > Importar DWG/DXF traz a arquitetura como referência; Arquivo > Exportar gera DWG.');
 window.__vertice = store; // usado pelos testes automatizados
-window.__vertice_api = { exportarDxf: () => exportarDxf(store.project, store, store.project.pavimentos), lerDxf, paraFundo, paredesDeLinhas };
+window.__vertice_api = { exportarDxf: () => exportarDxf(store.project, store, store.project.pavimentos), lerDxf, paraFundo, paredesDeLinhas, abrirDoc, docs };

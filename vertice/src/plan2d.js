@@ -11,6 +11,7 @@ export const COR = {
   laje: '#b9a8de', spda: '#2e8b57', parede: '#4a5562', paredeFill: '#c4cad1', sel: '#1d6fd6',
 };
 
+export const DESENHO = ['linha', 'retangulo', 'circulo', 'texto', 'medir'];
 const GRUPO_TIPO = { luz: 'ILUM', interruptor: 'ILUM', tug: 'TUG', tue: 'TUE' };
 
 export class Plan2D {
@@ -96,6 +97,11 @@ export class Plan2D {
       viga: this.start ? 'Clique o próximo apoio. Duplo clique, Esc ou botão direito encerra.' : 'Clique o primeiro apoio da viga (snap em pilares).',
       laje: this.start ? 'Clique o canto oposto da laje.' : 'Clique o primeiro canto da laje.',
       apagar: 'Clique num elemento para apagar.',
+      linha: this.start ? 'Clique o próximo ponto (Esc encerra).' : 'Clique o ponto inicial da linha.',
+      retangulo: this.start ? 'Clique o canto oposto.' : 'Clique o primeiro canto.',
+      circulo: this.start ? 'Clique um ponto do contorno.' : 'Clique o centro.',
+      texto: 'Clique onde o texto começa.',
+      medir: this.start ? 'Clique o segundo ponto.' : 'Clique o primeiro ponto da medição.',
       atribuir: c ? `Clique nos pontos para atribuir ao circuito ${c.nome}.` : 'Crie um circuito primeiro.',
     };
     if (TIPOS[this.tool]) return `Clique para inserir: ${TIPOS[this.tool].nome}.` + (GRUPO_TIPO[this.tool] && c ? ` Circuito ativo: ${c.nome}.` : '');
@@ -120,7 +126,7 @@ export class Plan2D {
     const r = this.cv.getBoundingClientRect();
     const sx = e.clientX - r.left, sy = e.clientY - r.top;
     let p = this.snap(this.toWorld(sx, sy));
-    if ((this.tool === 'parede' || this.tool === 'viga') && this.start && this.store.settings.orto) {
+    if (['parede', 'viga', 'linha', 'medir'].includes(this.tool) && this.start && this.store.settings.orto) {
       const dx = Math.abs(p.x - this.start.x), dy = Math.abs(p.y - this.start.y);
       p = dx >= dy ? { x: p.x, y: this.start.y } : { x: this.start.x, y: p.y };
     }
@@ -175,6 +181,7 @@ export class Plan2D {
       s.refreshHint();
       return;
     }
+    if (DESENHO.includes(this.tool)) return this.desenhoClique(p);
     if (this.tool === 'apagar') {
       const hit = this.hitTest(p.raw);
       if (hit) s.remove(hit);
@@ -197,7 +204,7 @@ export class Plan2D {
       const circ = grupo && c && c.tipo === grupo ? c.id : null;
       let nova = null;
       s.commit(t.nome, () => {
-        nova = { id: s.uid('E'), tipo: this.tool, x: p.x, y: p.y, altura: t.altura, descricao: '' };
+        nova = { id: s.uid('E'), tipo: this.tool, x: p.x, y: p.y, altura: this.tool === 'pilar' ? 0 : s.settings.altura ?? t.altura, descricao: '' };
         if (t.disc === 'ele') Object.assign(nova, { potencia: t.potencia, circuitoId: circ });
         if (this.tool === 'pilar') Object.assign(nova, { b: t.b, h: t.h });
         this.floor.elementos.push(nova);
@@ -255,13 +262,17 @@ export class Plan2D {
       const segOk = (o) => cruzando ? segRect(o, minX, minY, maxX, maxY) : dentro(o.x1, o.y1) && dentro(o.x2, o.y2);
       const itens = [];
       const f = this.floor;
+      for (const d of f.desenho || []) {
+        const ok = d.t === 'linha' || d.t === 'ret' ? segOk(d) : dentro(d.x, d.y);
+        if (ok && this.vis('arq')) itens.push({ kind: 'desenho', ref: d });
+      }
       for (const el of f.elementos) if (this.vis(TIPOS[el.tipo]?.disc) && dentro(el.x, el.y)) itens.push({ kind: 'elemento', ref: el });
       if (this.vis('arq')) for (const w of f.paredes) if (segOk(w)) itens.push({ kind: 'parede', ref: w });
       if (this.vis('est')) {
         for (const v of f.vigas || []) if (segOk(v)) itens.push({ kind: 'viga', ref: v });
         for (const l of f.lajes || []) if (cruzando ? !(l.x2 < minX || l.x1 > maxX || l.y2 < minY || l.y1 > maxY) : dentro(l.x1, l.y1) && dentro(l.x2, l.y2)) itens.push({ kind: 'laje', ref: l });
       }
-      this.store.selectMany(itens, b.add);
+      this.store.selectMany(itens.filter((it) => this.passaFiltro(it)), b.add);
     }
     this.pan = null;
     this.render();
@@ -276,8 +287,31 @@ export class Plan2D {
     this.store.setTool('selecionar');
   }
 
+  // filtro de seleção (Desenhos > Filtro de seleção)
+  passaFiltro(it) {
+    const f = this.store.settings.filtro || 'todos';
+    if (f === 'todos' || !it) return true;
+    if (f === 'arq') return it.kind === 'parede';
+    if (f === 'est') return it.kind === 'viga' || it.kind === 'laje' || it.ref.tipo === 'pilar';
+    if (f === 'desenho') return it.kind === 'desenho';
+    return it.kind === 'elemento' && TIPOS[it.ref.tipo]?.disc === f;
+  }
+
   hitTest(p) {
+    const r = this.hitBruto(p);
+    return r && this.passaFiltro(r) ? r : null;
+  }
+
+  hitBruto(p) {
     const tolPx = 9 / this.scale;
+    for (const d of this.floor.desenho || []) {
+      let dist = Infinity;
+      if (d.t === 'linha') dist = segDist(p, d);
+      else if (d.t === 'ret') dist = Math.min(...[[d.x1, d.y1, d.x2, d.y1], [d.x2, d.y1, d.x2, d.y2], [d.x2, d.y2, d.x1, d.y2], [d.x1, d.y2, d.x1, d.y1]].map(([a, b, c, e]) => segDist(p, { x1: a, y1: b, x2: c, y2: e })));
+      else if (d.t === 'circ') dist = Math.abs(Math.hypot(p.x - d.x, p.y - d.y) - d.r);
+      else if (d.t === 'texto') dist = p.x >= d.x - tolPx && p.x <= d.x + d.texto.length * d.h * 0.6 && p.y <= d.y + tolPx && p.y >= d.y - d.h - tolPx ? 0 : Infinity;
+      if (dist < tolPx) return { kind: 'desenho', ref: d };
+    }
     const f = this.floor;
     let best = null, bd = Infinity;
     for (const el of f.elementos) {
@@ -302,6 +336,71 @@ export class Plan2D {
     return null;
   }
 
+  async desenhoClique(p) {
+    const s = this.store;
+    const f = this.floor;
+    const add = (nome, obj) => s.commit(nome, () => { (f.desenho ||= []).push({ id: s.uid('D'), ...obj }); });
+    if (this.tool === 'texto') {
+      const t = await s.pedirTexto('Texto', 'Digite o texto:', '');
+      if (t) add('Texto', { t: 'texto', x: p.x, y: p.y, h: Math.max(0.1, (s.settings.escala || 50) * 0.0025), texto: t });
+      return;
+    }
+    if (!this.start) { this.start = { x: p.x, y: p.y }; s.refreshHint(); return this.render(); }
+    const a = this.start;
+    if (this.tool === 'medir') {
+      const dx = p.x - a.x, dy = p.y - a.y;
+      s.log(`Distância: ${fmt(Math.hypot(dx, dy), 3)} m  (ΔX ${fmt(dx, 3)}  ΔY ${fmt(dy, 3)}  ângulo ${fmt((Math.atan2(-dy, dx) * 180) / Math.PI, 1)}°)`, 'ok');
+      this.start = null;
+    } else if (this.tool === 'linha') {
+      if (p.x !== a.x || p.y !== a.y) add('Linha', { t: 'linha', x1: a.x, y1: a.y, x2: p.x, y2: p.y });
+      this.start = { x: p.x, y: p.y };
+    } else if (this.tool === 'retangulo') {
+      add('Retângulo', { t: 'ret', x1: Math.min(a.x, p.x), y1: Math.min(a.y, p.y), x2: Math.max(a.x, p.x), y2: Math.max(a.y, p.y) });
+      this.start = null;
+    } else if (this.tool === 'circulo') {
+      const r = Math.hypot(p.x - a.x, p.y - a.y);
+      if (r > 0.01) add('Círculo', { t: 'circ', x: a.x, y: a.y, r });
+      this.start = null;
+    }
+    s.refreshHint();
+    this.render();
+  }
+
+  drawAnotacao(d) {
+    const c = this.ctx, sel = this.store.isSelected(d), hov = this.hover?.ref === d;
+    c.save();
+    c.strokeStyle = sel ? COR.sel : hov ? '#5c8fd6' : '#2b2f33';
+    c.fillStyle = c.strokeStyle;
+    c.lineWidth = sel ? 1.8 : 1.1;
+    c.beginPath();
+    if (d.t === 'linha') { const a = this.toScreen(d.x1, d.y1), b = this.toScreen(d.x2, d.y2); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); }
+    else if (d.t === 'ret') { const a = this.toScreen(d.x1, d.y1), b = this.toScreen(d.x2, d.y2); c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); }
+    else if (d.t === 'circ') { const a = this.toScreen(d.x, d.y); c.arc(a.x, a.y, d.r * this.scale, 0, Math.PI * 2); c.stroke(); }
+    else if (d.t === 'texto') {
+      const a = this.toScreen(d.x, d.y);
+      const px = d.h * this.scale;
+      if (px >= 4) { c.font = `${px}px "Segoe UI", sans-serif`; c.textBaseline = 'alphabetic'; c.fillText(d.texto, a.x, a.y); }
+    }
+    c.restore();
+  }
+
+  // escala de exibição 1:N (tela a 96 dpi)
+  get escala() { return Math.round(3779.5 / this.scale); }
+  setEscala(n) {
+    const cx = this.w / 2, cy = this.h / 2;
+    const w = this.toWorld(cx, cy);
+    this.scale = 3779.5 / n;
+    this.ox = cx - w.x * this.scale;
+    this.oy = cy - w.y * this.scale;
+    this.render();
+  }
+  zoomPor(f) {
+    const cx = this.w / 2, cy = this.h / 2, w = this.toWorld(cx, cy);
+    this.scale = Math.min(600, Math.max(0.5, this.scale * f));
+    this.ox = cx - w.x * this.scale; this.oy = cy - w.y * this.scale;
+    this.render();
+  }
+
   zoomExtents() {
     if (!this.w || !this.h) { this.pendingFit = true; return; }
     const pts = [];
@@ -324,6 +423,7 @@ export class Plan2D {
   // ---------- desenho ----------
   render() {
     if (!this.w) return;
+    this.store.onRender?.();
     const c = this.ctx, s = this.store, f = this.floor;
     c.clearRect(0, 0, this.w, this.h);
     c.fillStyle = '#ffffff';
@@ -356,6 +456,8 @@ export class Plan2D {
     this.foco('ele');
     if (this.vis('ele')) this.drawFiacao();
 
+    this.foco('arq');
+    if (this.vis('arq')) for (const d of f.desenho || []) this.drawAnotacao(d);
     for (const el of f.elementos) {
       const d = TIPOS[el.tipo]?.disc;
       if (!this.vis(d)) continue;
@@ -381,6 +483,18 @@ export class Plan2D {
       c.save(); c.fillStyle = 'rgba(185,168,222,.25)'; c.strokeStyle = COR.est; c.setLineDash([6, 4]);
       c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y); c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); c.restore();
       this.tag(`${fmt(Math.abs(this.mouse.x - this.start.x))} × ${fmt(Math.abs(this.mouse.y - this.start.y))} m`, (a.x + b.x) / 2, (a.y + b.y) / 2, COR.est);
+    } else if (DESENHO.includes(this.tool) && this.start) {
+      const a = this.start, m = this.mouse;
+      const c2 = this.ctx;
+      c2.save(); c2.strokeStyle = COR.sel; c2.setLineDash([6, 4]); c2.lineWidth = 1.2;
+      const A = this.toScreen(a.x, a.y), B = this.toScreen(m.x, m.y);
+      c2.beginPath();
+      if (this.tool === 'retangulo') c2.rect(A.x, A.y, B.x - A.x, B.y - A.y);
+      else if (this.tool === 'circulo') c2.arc(A.x, A.y, Math.hypot(B.x - A.x, B.y - A.y), 0, Math.PI * 2);
+      else { c2.moveTo(A.x, A.y); c2.lineTo(B.x, B.y); }
+      c2.stroke(); c2.restore();
+      const L = Math.hypot(m.x - a.x, m.y - a.y);
+      this.tag(this.tool === 'circulo' ? `R = ${fmt(L)} m` : this.tool === 'retangulo' ? `${fmt(Math.abs(m.x - a.x))} × ${fmt(Math.abs(m.y - a.y))} m` : `${fmt(L)} m`, (A.x + B.x) / 2, (A.y + B.y) / 2 - 12, COR.sel);
     } else if (TIPOS[this.tool] && this.mouse.inside) {
       c.save(); c.globalAlpha = 0.5;
       this.drawSymbol(this.tool, this.toScreen(this.mouse.x, this.mouse.y), COR.sel, { b: TIPOS[this.tool].b, h: TIPOS[this.tool].h });
@@ -572,8 +686,19 @@ export class Plan2D {
         if (sg.de.pav !== sg.para.pav) this.tag(sg.de.pav === f ? '↓' : '↑', b.x + 10, b.y + 10, cor);
       }
     };
-    desenha(s.hid.af.segmentos, COR.af, (sg) => `Ø${sg.de_mm}`);
-    desenha(s.hid.esg.segmentos, COR.esg, (sg) => `DN${sg.dn} i=${sg.declividade}%`, [8, 3, 2, 3]);
+    // vista Hidráulico destaca água fria; vista Sanitário destaca esgoto
+    const sub = s.settings.subrede;
+    const base = c.globalAlpha, rot = this.rotulos;
+    const camada = (qual, fn) => {
+      const apaga = sub && sub !== qual;
+      c.globalAlpha = apaga ? base * 0.3 : base;
+      this.rotulos = rot && !apaga;
+      fn();
+    };
+    camada('af', () => desenha(s.hid.af.segmentos, COR.af, (sg) => `Ø${sg.de_mm}`));
+    camada('esg', () => desenha(s.hid.esg.segmentos, COR.esg, (sg) => `DN${sg.dn} i=${sg.declividade}%`, [8, 3, 2, 3]));
+    c.globalAlpha = base;
+    this.rotulos = rot;
   }
 
   drawSpda() {

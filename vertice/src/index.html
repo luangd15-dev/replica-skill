@@ -9,7 +9,7 @@
 <body>
   <div id="app">
     <header id="titlebar">
-      <div class="brand"><span class="logo"></span>Vértice</div>
+      <span class="logo" title="Vértice"></span>
       <div id="quick"></div>
       <div id="doc-title"></div>
     </header>
@@ -18,46 +18,40 @@
     <section id="ribbon"></section>
 
     <main id="workspace">
-      <aside id="left" class="dock">
-        <div class="dock-head">Projeto</div>
-        <div id="tree" class="dock-body"></div>
-      </aside>
-      <div class="splitter" data-target="left"></div>
-
       <section id="center">
-        <div id="view-tabs">
-          <button data-view="2d" class="active">Planta 2D</button>
-          <button data-view="3d">Vista 3D</button>
-          <span id="floor-label"></span>
-        </div>
+        <div id="doc-tabs"></div>
         <div id="views">
           <canvas id="plan"></canvas>
           <div id="view3d" hidden></div>
           <div id="hint"></div>
         </div>
-        <div id="console">
-          <div class="dock-head">Mensagens <button id="clear-log" title="Limpar">×</button></div>
-          <div id="log"></div>
-        </div>
       </section>
-
       <div class="splitter" data-target="right"></div>
       <aside id="right" class="dock">
-        <div class="dock-head">Propriedades</div>
-        <div id="props" class="dock-body"></div>
+        <div class="dock-head"><span id="dock-title">Propriedades</span><button id="dock-close" title="Recolher painel">×</button></div>
+        <div id="dock-panels">
+          <div id="tree" class="panel" data-panel="edificacao" data-title="Edificação"></div>
+          <div id="props" class="panel" data-panel="propriedades" data-title="Propriedades"></div>
+          <div id="camadas" class="panel" data-panel="camadas" data-title="Camadas"></div>
+          <div id="msgs" class="panel" data-panel="mensagens" data-title="Mensagens"><div id="log"></div></div>
+        </div>
+        <div id="dock-switch"></div>
       </aside>
     </main>
 
     <footer id="status">
-      <span id="st-tool"></span>
-      <span id="st-coord">X 0,00 Y 0,00</span>
+      <span id="st-cmd">Comando - Selecione</span>
+      <span id="st-coord" class="st-box">0,00 ; 0,00</span>
+      <select id="st-escala" title="Escala da planta"></select>
+      <span class="st-sep"></span>
+      <span id="st-tools"></span>
       <span class="sp"></span>
-      <button id="st-grid" class="toggle on">GRADE</button>
-      <button id="st-snap" class="toggle on">SNAP</button>
-      <button id="st-orto" class="toggle on">ORTO</button>
+      <span id="st-floor"></span>
       <span id="st-volt"></span>
     </footer>
   </div>
+
+  <div id="menu" hidden></div>
 
   <div id="modal" hidden>
     <div class="modal-card">
