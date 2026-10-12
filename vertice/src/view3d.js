@@ -1,8 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { corCircuito } from './plan2d.js';
+import { TIPOS } from './tipos.js';
 
-const COR_TIPO = { luz: 0xf2c94c, tug: 0x2f80ed, tue: 0xd0453a, interruptor: 0x6b7785, qd: 0x34404c };
+const COR_TIPO = {
+  luz: 0xf2c94c, tug: 0x2f80ed, tue: 0xd0453a, interruptor: 0x6b7785, qd: 0x34404c,
+  reservatorio: 0x5aa9c9, ci: 0x8a5a2b, bacia: 0xf4f6f8, lavatorio: 0xf4f6f8, chuveiro: 0x9fb3c2, pia: 0xb8c2cc, tanque: 0xd9dee3, mlr: 0xe8ecef,
+};
 
 export class View3D {
   constructor(container, store) {
@@ -19,7 +23,7 @@ export class View3D {
     this.renderer.setClearColor(0xf4f6f9);
     this.el.appendChild(this.renderer.domElement);
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
     this.camera.position.set(18, 16, 22);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -31,6 +35,7 @@ export class View3D {
     this.scene.add(this.grid);
     this.model = new THREE.Group();
     this.scene.add(this.model);
+    this.initBoxSelect();
     new ResizeObserver(() => this.resize()).observe(this.el);
     this.ready = true;
     this.resize();
@@ -41,6 +46,46 @@ export class View3D {
       this.renderer.render(this.scene, this.camera);
     };
     loop();
+  }
+
+  // seleção em área no 3D: Shift + arrastar
+  initBoxSelect() {
+    const dom = this.renderer.domElement;
+    const rect = document.createElement('div');
+    rect.style.cssText = 'position:absolute;border:1px solid #1d6fd6;background:rgba(29,111,214,.08);pointer-events:none;display:none';
+    this.el.appendChild(rect);
+    let start = null;
+    dom.addEventListener('pointerdown', (e) => {
+      if (!e.shiftKey || e.button !== 0) return;
+      this.controls.enabled = false;
+      const r = dom.getBoundingClientRect();
+      start = { x: e.clientX - r.left, y: e.clientY - r.top };
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      const r = dom.getBoundingClientRect();
+      const x = e.clientX - r.left, y = e.clientY - r.top;
+      Object.assign(rect.style, { display: 'block', left: Math.min(x, start.x) + 'px', top: Math.min(y, start.y) + 'px', width: Math.abs(x - start.x) + 'px', height: Math.abs(y - start.y) + 'px' });
+    });
+    window.addEventListener('pointerup', (e) => {
+      if (!start) return;
+      const r = dom.getBoundingClientRect();
+      const end = { x: e.clientX - r.left, y: e.clientY - r.top };
+      const [x0, x1] = [Math.min(start.x, end.x), Math.max(start.x, end.x)], [y0, y1] = [Math.min(start.y, end.y), Math.max(start.y, end.y)];
+      start = null;
+      rect.style.display = 'none';
+      this.controls.enabled = true;
+      const itens = [];
+      const v = new THREE.Vector3();
+      for (const o of this.model.children) {
+        if (!o.userData.ref) continue;
+        o.getWorldPosition(v).project(this.camera);
+        const sx = ((v.x + 1) / 2) * r.width, sy = ((1 - v.y) / 2) * r.height;
+        if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1 && v.z < 1) itens.push(o.userData);
+      }
+      this.store.selectMany(itens.filter((it) => it.pav === this.store.floor).map(({ kind, ref }) => ({ kind, ref })), false);
+      this.store.log(`${itens.length} elemento(s) na área (${itens.filter((it) => it.pav === this.store.floor).length} no pavimento atual).`);
+    });
   }
 
   resize() {
@@ -68,53 +113,79 @@ export class View3D {
 
   rebuild(frame) {
     this.dirty = false;
-    const { project, results } = this.store;
+    const { project, results, hid, spda, settings } = this.store;
+    const vis = (d) => settings.vis[d] !== false;
     for (const ch of [...this.model.children]) {
       this.model.remove(ch);
       ch.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); });
     }
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe9ecef, roughness: 0.9 });
-    const curMat = new THREE.MeshStandardMaterial({ color: 0xdfe9f7, roughness: 0.9 });
+    const add = (o, data) => { if (data) o.userData = data; this.model.add(o); return o; };
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe9ecef, roughness: 0.9, transparent: true, opacity: vis('est') ? 0.55 : 1 });
+    const curMat = new THREE.MeshStandardMaterial({ color: 0xdfe9f7, roughness: 0.9, transparent: true, opacity: vis('est') ? 0.55 : 1 });
     const slabMat = new THREE.MeshStandardMaterial({ color: 0xcfd5dc, roughness: 1 });
+    const concreto = new THREE.MeshStandardMaterial({ color: 0xb7aed0, roughness: 0.85 });
+    const lajeMat = new THREE.MeshStandardMaterial({ color: 0xcfc6e6, roughness: 0.9, transparent: true, opacity: 0.6 });
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x8a96a3 });
     const box = new THREE.Box3();
+    const caixa = (w, h, d, mat, x, y, z, rotY = 0, data) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z);
+      m.rotation.y = rotY;
+      return add(m, data);
+    };
 
-    for (const pav of project.pavimentos) {
+    for (const [pi, pav] of project.pavimentos.entries()) {
       const cur = pav === this.store.floor;
       const y0 = pav.cota;
-      for (const w of pav.paredes) {
+      if (vis('arq')) for (const w of pav.paredes) {
         const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1);
         if (!len) continue;
-        const g = new THREE.BoxGeometry(len + w.esp, pav.peDireito, w.esp);
-        const m = new THREE.Mesh(g, cur ? curMat : wallMat);
-        m.position.set((w.x1 + w.x2) / 2, y0 + pav.peDireito / 2, (w.y1 + w.y2) / 2);
-        m.rotation.y = -Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
-        this.model.add(m);
-        const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), edgeMat);
+        const m = caixa(len + w.esp, pav.peDireito, w.esp, cur ? curMat : wallMat, (w.x1 + w.x2) / 2, y0 + pav.peDireito / 2, (w.y1 + w.y2) / 2,
+          -Math.atan2(w.y2 - w.y1, w.x2 - w.x1), { kind: 'parede', ref: w, pav });
+        const e = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), edgeMat);
         e.position.copy(m.position); e.rotation.copy(m.rotation);
-        this.model.add(e);
+        add(e);
         box.expandByObject(m);
       }
-      // laje: retângulo envolvente das paredes do pavimento
-      if (pav.paredes.length) {
+      // piso do térreo
+      if (pi === 0 && pav.paredes.length && vis('arq')) {
         const xs = pav.paredes.flatMap((w) => [w.x1, w.x2]), zs = pav.paredes.flatMap((w) => [w.y1, w.y2]);
         const [minX, maxX, minZ, maxZ] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
-        const slab = new THREE.Mesh(new THREE.BoxGeometry(maxX - minX + 0.3, 0.1, maxZ - minZ + 0.3), slabMat);
-        slab.position.set((minX + maxX) / 2, y0 - 0.05, (minZ + maxZ) / 2);
-        this.model.add(slab);
+        caixa(maxX - minX + 0.3, 0.1, maxZ - minZ + 0.3, slabMat, (minX + maxX) / 2, y0 - 0.05, (minZ + maxZ) / 2);
+      }
+      if (vis('est')) {
+        const topo = y0 + pav.peDireito;
+        for (const l of pav.lajes || []) {
+          const m = caixa(l.x2 - l.x1, l.h / 100, l.y2 - l.y1, lajeMat, (l.x1 + l.x2) / 2, topo - l.h / 200, (l.y1 + l.y2) / 2, 0, { kind: 'laje', ref: l, pav });
+          box.expandByObject(m);
+        }
+        for (const v of pav.vigas || []) {
+          const len = Math.hypot(v.x2 - v.x1, v.y2 - v.y1);
+          if (!len) continue;
+          caixa(len, v.h / 100, v.b / 100, concreto, (v.x1 + v.x2) / 2, topo - v.h / 200, (v.y1 + v.y2) / 2, -Math.atan2(v.y2 - v.y1, v.x2 - v.x1), { kind: 'viga', ref: v, pav });
+        }
+        for (const p of pav.elementos.filter((e) => e.tipo === 'pilar')) {
+          const m = caixa(p.b / 100, pav.peDireito, p.h / 100, concreto, p.x, y0 + pav.peDireito / 2, p.y, 0, { kind: 'elemento', ref: p, pav });
+          box.expandByObject(m);
+        }
       }
       for (const el of pav.elementos) {
+        const t = TIPOS[el.tipo];
+        if (!t || el.tipo === 'pilar' || !vis(t.disc)) continue;
         const g = el.tipo === 'luz' ? new THREE.SphereGeometry(0.12, 16, 12)
           : el.tipo === 'qd' ? new THREE.BoxGeometry(0.4, 0.55, 0.1)
+          : el.tipo === 'reservatorio' ? new THREE.CylinderGeometry(0.6, 0.55, 0.9, 24)
+          : el.tipo === 'ci' ? new THREE.BoxGeometry(0.6, 0.4, 0.6)
+          : t.disc === 'hid' ? new THREE.BoxGeometry(0.35, 0.25, 0.35)
           : new THREE.BoxGeometry(0.12, 0.12, 0.06);
-        const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: COR_TIPO[el.tipo], emissive: el.tipo === 'luz' ? 0x6b5410 : 0 }));
-        m.position.set(el.x, y0 + Math.min(el.altura, pav.peDireito - 0.1), el.y);
-        this.model.add(m);
+        const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: COR_TIPO[el.tipo] ?? 0x888888, emissive: el.tipo === 'luz' ? 0x6b5410 : 0 }));
+        m.position.set(el.x, y0 + el.altura, el.y);
+        add(m, { kind: 'elemento', ref: el, pav });
       }
     }
 
     // fiação pelo forro
-    for (const r of results) {
+    if (vis('ele')) for (const r of results) {
       if (!r.qd) continue;
       const pav = project.pavimentos.find((p) => p.elementos.includes(r.qd));
       if (!pav) continue;
@@ -122,10 +193,47 @@ export class View3D {
       const pts = [new THREE.Vector3(r.qd.x, pav.cota + r.qd.altura, r.qd.y), new THREE.Vector3(r.qd.x, yc, r.qd.y)];
       for (const e of r.rota) {
         pts.push(new THREE.Vector3(e.x, yc, e.y));
-        if (e.altura < pav.peDireito - 0.2) { pts.push(new THREE.Vector3(e.x, pav.cota + e.altura, e.y), new THREE.Vector3(e.x, yc, e.y)); }
+        if (e.altura < pav.peDireito - 0.2) pts.push(new THREE.Vector3(e.x, pav.cota + e.altura, e.y), new THREE.Vector3(e.x, yc, e.y));
       }
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: corCircuito(project, r.circuito.id) }));
-      this.model.add(line);
+      add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: corCircuito(project, r.circuito.id) })));
+    }
+
+    // tubulações: tubos de verdade, com o diâmetro calculado
+    const tubo = (a, b, raio, cor) => {
+      const pts = [new THREE.Vector3(a.x, a.z, a.y), new THREE.Vector3(b.x, a.z, a.y), new THREE.Vector3(b.x, a.z, b.y), new THREE.Vector3(b.x, b.z, b.y)];
+      const mat = new THREE.MeshStandardMaterial({ color: cor, roughness: 0.5 });
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const p = pts[i], q = pts[i + 1];
+        const L = p.distanceTo(q);
+        if (L < 0.01) continue;
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(raio, raio, L, 10), mat);
+        m.position.copy(p).add(q).multiplyScalar(0.5);
+        m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), q.clone().sub(p).normalize());
+        add(m);
+      }
+    };
+    if (vis('hid') && hid) {
+      for (const s of hid.af.segmentos) tubo(s.de, s.para, Math.max(0.02, s.de_mm / 2000), 0x1593a6);
+      for (const s of hid.esg.segmentos) tubo(s.de, s.para, Math.max(0.03, s.dn / 2000), 0x8a5a2b);
+    }
+
+    // SPDA
+    if (vis('spda') && spda?.ativo && spda.captacao) {
+      const mat = new THREE.LineBasicMaterial({ color: 0x2e8b57 });
+      const seg = (a, b) => add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), mat));
+      const z = spda.contorno.z;
+      for (const l of spda.captacao) seg(new THREE.Vector3(l.x1, z, l.y1), new THREE.Vector3(l.x2, z, l.y2));
+      for (const d of spda.descidas) seg(new THREE.Vector3(d.x, z, d.y), new THREE.Vector3(d.x, -0.5, d.y));
+      const a = spda.anel;
+      const ring = [[a.minX, a.minY], [a.maxX, a.minY], [a.maxX, a.maxY], [a.minX, a.maxY], [a.minX, a.minY]].map(([x, y]) => new THREE.Vector3(x, -0.5, y));
+      add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), mat));
+      // mini-captores nos nós
+      const capt = new THREE.MeshStandardMaterial({ color: 0x2e8b57 });
+      for (const l of spda.captacao) for (const [x, y] of [[l.x1, l.y1], [l.x2, l.y2]]) {
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.3, 6), capt);
+        m.position.set(x, z + 0.15, y);
+        add(m);
+      }
     }
 
     if (frame && !box.isEmpty()) {

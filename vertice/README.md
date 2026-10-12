@@ -1,41 +1,65 @@
 # Vértice
 
-Aplicativo desktop para projeto elétrico predial: planta 2D, vista 3D, circuitos e
-dimensionamento simplificado (referência NBR 5410). Interface clara com ribbon,
-árvore do projeto, painel de propriedades e mensagens.
+Aplicativo desktop para projeto de edificações: arquitetura, estrutura, elétrico,
+hidrossanitário e SPDA, com planta 2D, vista 3D e DWG/DXF. Interface clara com
+ribbon, árvore do projeto, painel de propriedades e mensagens.
 
 Escrito do zero (Electron + Three.js). Não contém código, ícones, textos ou
 arquivos de nenhum software comercial.
 
+## Disciplinas
+
+| aba | o que faz | cálculo (simplificado, referência) |
+| --- | --- | --- |
+| Arquitetura | paredes, pavimentos, níveis intermediários, referência DWG/DXF, paredes a partir do desenho | |
+| Estrutural | pilares, vigas, lajes, lançamento automático (pilares em cantos/encontros/vãos > 5 m, vigas sobre paredes, lajes nos ambientes) | lajes → vigas (charneiras 45°) → pilares → fundação; flexão de vigas, pilares à compressão, sapatas (NBR 6118/6120, C25/CA-50) |
+| Elétrico | quadros, pontos de luz, interruptores, TUG, TUE, circuitos | corrente, cabo, disjuntor, queda de tensão (NBR 5410, método B1) |
+| Hidrossanitário | reservatório, caixa de inspeção, bacia, lavatório, chuveiro, pia, tanque, máquina de lavar | água fria por pesos, Ø por v ≤ 3 m/s, pressões com Fair-Whipple-Hsiao (NBR 5626); esgoto por UHC (NBR 8160) |
+| SPDA | captação em malha, descidas, anel de aterramento | método das malhas por nível I–IV (NBR 5419-3) |
+
+Relatórios: quadro de cargas, vigas, pilares, fundações, água fria, esgoto, SPDA,
+lista de materiais de todas as disciplinas e verificações, em CSV ou HTML.
+
+## DWG e DXF
+
+- **Importar** (Arquivo ou Arquitetura > Importar DWG/DXF): o desenho entra como
+  referência do pavimento, com camadas liga/desliga, unidade detectada (mm, cm, m) e
+  blocos explodidos. Opcionalmente, linhas duplas de parede viram paredes do modelo,
+  unidas nos cantos e encontros.
+- **Exportar** (Arquivo > Exportar pavimento / todos): DWG ou DXF AutoCAD 2000, com
+  camadas por disciplina (ARQ-, EST-, ELE-, HID-, SPDA, REF-).
+
+A conversão DWG ↔ DXF usa o [LibreDWG](https://www.gnu.org/software/libredwg/)
+(GNU, GPL-3.0), que roda como programa separado em `resources/libredwg`. O DWG
+gravado pelo LibreDWG é marcado como experimental pelo próprio projeto; se algum
+programa recusar o DWG, exporte em DXF, que todos os CADs leem.
+
 ## Usar
 
-| ação | onde |
-| --- | --- |
-| Desenhar paredes | Arquitetura > Parede (duplo clique ou Esc encerra) |
-| Novo pavimento | Arquitetura > Novo pavimento (copia as paredes do anterior) |
-| Quadro, luz, interruptor, TUG, TUE | Elétrico > Pontos (entram no circuito ativo se o tipo bate) |
-| Circuitos | Elétrico > Novo circuito / Atribuir circuito; tipo e tensão em Propriedades |
-| Dimensionar | Elétrico > Dimensionar: corrente, cabo, disjuntor, queda de tensão |
-| Relatórios | Relatórios > Quadro de cargas, Lista de materiais, Verificações (CSV/HTML) |
-| Arquivos | Arquivo > Novo / Abrir / Salvar (`.vtx`, JSON) |
-
-Atalhos: Ctrl+Z/Y, Ctrl+S, Ctrl+O, Ctrl+N, Del, Esc, F7 grade, F8 orto, F9 snap.
+Atalhos: Ctrl+Z/Y, Ctrl+S, Ctrl+O, Ctrl+N, Ctrl+C/V (copiar e colar blocos, inclusive
+em outro pavimento), Ctrl+A, Del, Esc, F7 grade, F8 orto, F9 snap.
+Seleção por área: arraste no vazio (da esquerda para a direita pega o que está dentro;
+da direita para a esquerda, o que toca). No 3D: Shift + arrastar.
 Roda do mouse: zoom. Botão do meio, botão direito ou Espaço + arrastar: deslocar.
+A aba ativa destaca a sua disciplina; Visualizar liga e desliga disciplinas e muda o
+estilo das linhas de chamada (simples, círculo, retângulo).
 
 ## Desenvolver
 
 ```bash
 npm install
+npm run libredwg   # baixa os conversores DWG (uma vez)
 npm start          # roda o app
-npm test           # testes do cálculo elétrico
+npm test           # testes dos cálculos, DXF e importação
 npm run dist:win   # gera dist/Vertice-<versão>-portatil.exe e -instalador.exe
 ```
 
-No Linux, `dist:win` precisa do Wine para gerar o instalador NSIS.
+No Linux, `dist:win` precisa do Wine para gerar o instalador NSIS, e o app usa o
+Wine para rodar os conversores DWG.
 
-## Limites do cálculo
+## Limites
 
-Método B1 (eletroduto embutido), cobre/PVC 70 °C, 2 condutores carregados, sem
-fatores de agrupamento ou temperatura. Comprimento estimado pela rota de vizinho
-mais próximo +20% mais descidas. Serve para estudo; o projeto final é
-responsabilidade de um profissional habilitado.
+Todos os cálculos são simplificados, para estudo e pré-dimensionamento; o projeto final
+é responsabilidade de um profissional habilitado. Não há verificação de flechas,
+punção, torção, armadura de cisalhamento detalhada, água quente, águas pluviais,
+gás, nem análise de risco de SPDA.

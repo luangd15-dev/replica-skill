@@ -2,13 +2,8 @@
 // Cobre: corrente de projeto, seção por capacidade de condução (método B1, cobre/PVC,
 // 2 condutores carregados), seção mínima, disjuntor e queda de tensão.
 
-export const TIPOS = {
-  luz: { nome: 'Ponto de luz', sigla: 'L', potencia: 100, altura: 2.8, grupo: 'ILUM' },
-  tug: { nome: 'Tomada de uso geral', sigla: 'TUG', potencia: 100, altura: 0.3, grupo: 'TUG' },
-  tue: { nome: 'Tomada de uso específico', sigla: 'TUE', potencia: 1500, altura: 1.1, grupo: 'TUE' },
-  interruptor: { nome: 'Interruptor', sigla: 'S', potencia: 0, altura: 1.1, grupo: 'ILUM' },
-  qd: { nome: 'Quadro de distribuição', sigla: 'QD', potencia: 0, altura: 1.5, grupo: null },
-};
+import { TIPOS } from './tipos.js';
+export { TIPOS };
 
 // seção (mm²) -> capacidade de condução (A), método B1, PVC 70 °C, 2 condutores carregados
 export const CAPACIDADE = [
@@ -96,17 +91,17 @@ export function calcularProjeto(projeto) {
 export function verificacoes(projeto, resultados) {
   const out = [];
   for (const pav of projeto.pavimentos) {
-    const semCirc = pav.elementos.filter((e) => e.tipo !== 'qd' && e.tipo !== 'interruptor' && !e.circuitoId);
+    const semCirc = pav.elementos.filter((e) => TIPOS[e.tipo]?.disc === 'ele' && e.tipo !== 'qd' && e.tipo !== 'interruptor' && !e.circuitoId);
     if (semCirc.length) out.push({ nivel: 'aviso', texto: `${pav.nome}: ${semCirc.length} ponto(s) sem circuito.` });
     const qds = pav.elementos.filter((e) => e.tipo === 'qd').length;
-    if (pav.elementos.length && !qds) out.push({ nivel: 'aviso', texto: `${pav.nome}: nenhum quadro de distribuição.` });
+    if (pav.elementos.some((e) => TIPOS[e.tipo]?.disc === 'ele') && !qds) out.push({ nivel: 'aviso', texto: `${pav.nome}: nenhum quadro de distribuição.` });
   }
   for (const r of resultados) {
     for (const a of r.avisos) out.push({ nivel: r.ok ? 'aviso' : 'erro', texto: `${r.circuito.nome}: ${a}` });
     if (r.circuito.tipo === 'TUE' && r.pontos.length > 1)
       out.push({ nivel: 'aviso', texto: `${r.circuito.nome}: TUE deve ter circuito exclusivo (1 ponto).` });
-    if (r.circuito.tipo === 'TUG' && r.potencia > 1270 * (r.circuito.tensao / 127))
-      out.push({ nivel: 'aviso', texto: `${r.circuito.nome}: carga alta para um circuito de TUG.` });
+    if (r.circuito.tipo === 'TUG' && r.ib > 16)
+      out.push({ nivel: 'aviso', texto: `${r.circuito.nome}: corrente de ${r.ib.toFixed(1)} A, alta para um circuito de TUG. Divida o circuito.` });
   }
   if (!out.length) out.push({ nivel: 'ok', texto: 'Nenhum problema encontrado.' });
   return out;
