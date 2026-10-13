@@ -11,7 +11,7 @@ export const CAMADAS = [
   { nome: 'EST-LAJES', cor: 4 },
   { nome: 'EST-TEXTO', cor: 6 },
   { nome: 'ELE-PONTOS', cor: 5 },
-  { nome: 'ELE-FIACAO', cor: 5 },
+  { nome: 'ELE-ELETRODUTO', cor: 30 },
   { nome: 'ELE-TEXTO', cor: 5 },
   { nome: 'HID-PONTOS', cor: 4 },
   { nome: 'HID-AGUA-FRIA', cor: 150 },
@@ -76,11 +76,15 @@ export function entidadesPavimento(projeto, calc, pav, dx = 0) {
       } else if (e.tipo === 'interruptor') {
         circle('ELE-PONTOS', e.x, e.y, r * 0.5);
         line('ELE-PONTOS', e.x + r * 0.35, e.y - r * 0.35, e.x + r * 1.2, e.y - r * 1.2);
-      } else if (e.tipo === 'qd') {
+      } else if (t.quadro) {
         poly('ELE-PONTOS', [[e.x - 0.25, e.y - 0.12], [e.x + 0.25, e.y - 0.12], [e.x + 0.25, e.y + 0.12], [e.x - 0.25, e.y + 0.12]]);
+      } else {
+        circle('ELE-PONTOS', e.x, e.y, r * 0.8);
+        text('ELE-TEXTO', e.x - 0.08, e.y - 0.05, 0.1, t.sigla);
       }
       const circ = projeto.circuitos.find((c) => c.id === e.circuitoId);
-      const rot = e.tipo === 'qd' ? 'QD' : `${circ ? circ.numero : '?'}${e.tipo === 'tue' ? ` ${e.potencia}W` : ''}`;
+      const rot = t.quadro || e.tipo === 'cp' ? (calc.nomeQuadro ? calc.nomeQuadro(e) : t.sigla)
+        : `${circ ? circ.numero : '?'}${t.comandada ? (e.comando || '') : ''}${e.comandos ? ' ' + e.comandos.join('') : ''}${e.tipo === 'tue' ? ` ${e.potencia}W` : ''}`;
       text('ELE-TEXTO', e.x + 0.2, e.y - 0.2, 0.15, rot);
     } else if (t.disc === 'hid') {
       if (e.tipo === 'reservatorio' || e.tipo === 'ci') poly('HID-PONTOS', [[e.x - 0.3, e.y - 0.3], [e.x + 0.3, e.y - 0.3], [e.x + 0.3, e.y + 0.3], [e.x - 0.3, e.y + 0.3]]);
@@ -89,11 +93,14 @@ export function entidadesPavimento(projeto, calc, pav, dx = 0) {
     }
   }
 
-  // fiação elétrica (trajeto simplificado em linha reta)
-  for (const r of calc.results) {
-    if (!r.qd || !pav.elementos.includes(r.qd)) continue;
-    const pts = [[r.qd.x, r.qd.y], ...r.rota.filter((e) => pav.elementos.includes(e)).map((e) => [e.x, e.y])];
-    if (pts.length > 1) poly('ELE-FIACAO', pts, false);
+  // eletrodutos calculados, com diâmetro e circuitos
+  if (calc.ele) {
+    for (const sg of calc.ele.segmentos) {
+      if (sg.de.pav !== pav || sg.para.pav !== pav) continue;
+      poly('ELE-ELETRODUTO', [[sg.de.x, sg.de.y], [sg.para.x, sg.de.y], [sg.para.x, sg.para.y]], false);
+      const nums = [...sg.circuitos].map((id) => projeto.circuitos.find((c) => c.id === id)?.numero).filter(Boolean).sort((a, b) => a - b);
+      if (Math.abs(sg.para.x - sg.de.x) > 0.6) text('ELE-TEXTO', (sg.de.x + sg.para.x) / 2, sg.de.y - 0.08, 0.1, `${nums.join(',')} Ø${sg.dn} ${sg.cont.F}F${sg.cont.N ? ` ${sg.cont.N}N` : ''}${sg.cont.T ? ` ${sg.cont.T}T` : ''}${sg.cont.R ? ` ${sg.cont.R}R` : ''}`);
+    }
   }
 
   // redes hidráulicas (trajeto ortogonal)

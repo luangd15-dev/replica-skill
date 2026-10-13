@@ -131,6 +131,27 @@ ipcMain.handle('cad:export', async (e, { content, nome }) => {
   }
 });
 
+// relatórios em PDF: renderiza o HTML numa janela oculta e imprime em A4
+ipcMain.handle('pdf:salvar', async (e, { html, nome }) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const r = await dialog.showSaveDialog(win, { defaultPath: nome, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+  if (r.canceled || !r.filePath) return null;
+  const off = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } });
+  try {
+    const tmp = path.join(tmpDir(), 'relatorio.html');
+    fs.writeFileSync(tmp, html, 'utf8');
+    await off.loadFile(tmp);
+    const largo = /<svg[^>]+width="(\d+)"/.exec(html);
+    const pdf = await off.webContents.printToPDF({ pageSize: 'A4', landscape: !!(largo && Number(largo[1]) > 800) || /Quadro de cargas/.test(html), printBackground: true, margins: { marginType: 'default' } });
+    fs.writeFileSync(r.filePath, pdf);
+    return { path: r.filePath };
+  } catch (err) {
+    return { erro: err.message };
+  } finally {
+    off.destroy();
+  }
+});
+
 ipcMain.on('win:title', (e, title) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (win) win.setTitle(title);

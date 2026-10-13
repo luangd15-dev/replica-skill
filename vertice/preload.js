@@ -7,5 +7,6 @@ contextBridge.exposeInMainWorld('host', {
     ipcRenderer.invoke('file:export', { content, defaultName, ext, label }),
   importCad: () => ipcRenderer.invoke('cad:import'),
   exportCad: (content, nome) => ipcRenderer.invoke('cad:export', { content, nome }),
+  salvarPdf: (html, nome) => ipcRenderer.invoke('pdf:salvar', { html, nome }),
   setTitle: (title) => ipcRenderer.send('win:title', title),
 });

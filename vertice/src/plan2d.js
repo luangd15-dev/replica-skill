@@ -12,7 +12,8 @@ export const COR = {
 };
 
 export const DESENHO = ['linha', 'retangulo', 'circulo', 'texto', 'medir'];
-const GRUPO_TIPO = { luz: 'ILUM', interruptor: 'ILUM', tug: 'TUG', tue: 'TUE' };
+const GRUPO_TIPO = Object.fromEntries(Object.entries(TIPOS).filter(([, t]) => t.disc === 'ele' && t.grupo).map(([k, t]) => [k, t.grupo]));
+const COMANDOS = ['interruptor', 'paralelo', 'intermediario', 'dimmer', 'sensor', 'pulsador'];
 
 export class Plan2D {
   constructor(canvas, store) {
@@ -187,6 +188,26 @@ export class Plan2D {
       if (hit) s.remove(hit);
       return;
     }
+    if (this.tool === 'distLuz' || this.tool === 'distTom') {
+      const amb = (this.floor.ambientes || []).find((a) => p.raw.x >= a.x1 && p.raw.x <= a.x2 && p.raw.y >= a.y1 && p.raw.y <= a.y2);
+      if (!amb) return s.log('Clique dentro de um ambiente. Use "Ambientes" para reconhecê-los a partir das paredes.', 'warn');
+      return s.distribuir(this.tool, amb);
+    }
+    if (this.tool === 'atribComando') {
+      const hit = this.hitTest(p.raw);
+      const L = s.settings.comandoAtivo || 'a';
+      if (!hit || hit.kind !== 'elemento') return;
+      const el = hit.ref;
+      if (TIPOS[el.tipo].comandada) s.commit('Comando', () => { el.comando = L; });
+      else if (COMANDOS.includes(el.tipo)) s.commit('Comando', () => {
+        const cs = new Set(el.comandos || []);
+        cs.has(L) ? cs.delete(L) : cs.add(L);
+        el.comandos = [...cs].sort();
+      });
+      else return;
+      s.log(`${TIPOS[el.tipo].sigla}: comando ${TIPOS[el.tipo].comandada ? `"${L}"` : `"${(el.comandos || []).join(', ') || '-'}"`}.`);
+      return;
+    }
     if (this.tool === 'atribuir') {
       const hit = this.hitTest(p.raw);
       const c = s.activeCircuit;
@@ -205,11 +226,17 @@ export class Plan2D {
       let nova = null;
       s.commit(t.nome, () => {
         nova = { id: s.uid('E'), tipo: this.tool, x: p.x, y: p.y, altura: this.tool === 'pilar' ? 0 : s.settings.altura ?? t.altura, descricao: '' };
-        if (t.disc === 'ele') Object.assign(nova, { potencia: t.potencia, circuitoId: circ });
+        if (t.disc === 'ele') {
+          Object.assign(nova, { potencia: t.potencia, circuitoId: t.quadro || this.tool === 'cp' ? null : circ });
+          if (t.comandada && circ) nova.comando = s.settings.comandoAtivo || 'a';
+          if (COMANDOS.includes(this.tool) && this.tool !== 'pulsador') nova.comandos = circ ? [s.settings.comandoAtivo || 'a'] : [];
+          if (t.quadro) Object.assign(nova, { esquema: this.tool === 'qd' ? '2F+N' : '3F+N', dps: this.tool === 'qd' });
+          if (t.quadro) delete nova.potencia;
+        }
         if (this.tool === 'pilar') Object.assign(nova, { b: t.b, h: t.h });
         this.floor.elementos.push(nova);
       });
-      if (grupo && !circ) s.log(`${t.sigla} inserido sem circuito: o circuito ativo não é do tipo ${grupo}.`, 'warn');
+      if (grupo && !circ && !t.quadro) s.log(`${t.sigla} inserido sem circuito: o circuito ativo não é do tipo ${grupo}.`, 'warn');
       s.select({ kind: 'elemento', ref: nova }, true);
     }
   }
@@ -242,7 +269,8 @@ export class Plan2D {
     }
     if (!p.inside) return;
     this.store.setCoord(p.x, p.y);
-    this.hover = ['selecionar', 'apagar', 'atribuir'].includes(this.tool) ? this.hitTest(p.raw) : null;
+    this.hover = ['selecionar', 'apagar', 'atribuir', 'atribComando'].includes(this.tool) ? this.hitTest(p.raw) : null;
+    this.cv.title = this.dicaEm(p.raw);
     this.render();
   }
 
@@ -291,7 +319,7 @@ export class Plan2D {
   passaFiltro(it) {
     const f = this.store.settings.filtro || 'todos';
     if (f === 'todos' || !it) return true;
-    if (f === 'arq') return it.kind === 'parede';
+    if (f === 'arq') return it.kind === 'parede' || it.kind === 'ambiente';
     if (f === 'est') return it.kind === 'viga' || it.kind === 'laje' || it.ref.tipo === 'pilar';
     if (f === 'desenho') return it.kind === 'desenho';
     return it.kind === 'elemento' && TIPOS[it.ref.tipo]?.disc === f;
@@ -330,6 +358,12 @@ export class Plan2D {
       if (d < w.esp / 2 + tolPx && d < bd) { best = { kind: 'parede', ref: w }; bd = d; }
     }
     if (best) return best;
+    if (this.vis('est') && this.store.settings.foco === 'est') for (const l of f.lajes || []) {
+      if (p.x >= l.x1 && p.x <= l.x2 && p.y >= l.y1 && p.y <= l.y2) return { kind: 'laje', ref: l };
+    }
+    if (this.vis('arq')) for (const a of f.ambientes || []) {
+      if (p.x >= a.x1 && p.x <= a.x2 && p.y >= a.y1 && p.y <= a.y2) return { kind: 'ambiente', ref: a };
+    }
     if (this.vis('est')) for (const l of f.lajes || []) {
       if (p.x >= l.x1 && p.x <= l.x2 && p.y >= l.y1 && p.y <= l.y2) return { kind: 'laje', ref: l };
     }
@@ -439,6 +473,7 @@ export class Plan2D {
     this.foco('est');
     if (this.vis('est')) for (const l of f.lajes || []) this.drawLaje(l);
     this.foco('arq');
+    if (this.vis('arq')) for (const a of f.ambientes || []) this.drawAmbiente(a);
     if (this.vis('arq')) {
       for (const w of f.paredes) {
         const sel = s.isSelected(w);
@@ -454,7 +489,7 @@ export class Plan2D {
     this.foco('hid');
     if (this.vis('hid')) this.drawRedesHid();
     this.foco('ele');
-    if (this.vis('ele')) this.drawFiacao();
+    if (this.vis('ele')) this.drawEletrodutos();
 
     this.foco('arq');
     if (this.vis('arq')) for (const d of f.desenho || []) this.drawAnotacao(d);
@@ -638,31 +673,144 @@ export class Plan2D {
     }
   }
 
-  drawFiacao() {
-    const c = this.ctx, s = this.store;
-    for (const r of s.results) {
-      if (!r.qd || !this.floor.elementos.includes(r.qd)) continue;
-      const col = corCircuito(s.project, r.circuito.id);
-      const active = s.activeCircuit && s.activeCircuit.id === r.circuito.id;
-      c.save();
-      c.strokeStyle = col;
-      c.globalAlpha *= active ? 0.95 : 0.55;
-      c.lineWidth = active ? 2 : 1.3;
-      c.setLineDash(r.circuito.tipo === 'ILUM' ? [6, 4] : []);
-      c.beginPath();
-      let prev = this.toScreen(r.qd.x, r.qd.y);
-      c.moveTo(prev.x, prev.y);
-      for (const e of r.rota) {
-        if (!this.floor.elementos.includes(e)) continue;
-        const q = this.toScreen(e.x, e.y);
-        const mx = (prev.x + q.x) / 2, my = (prev.y + q.y) / 2;
-        const nx = -(q.y - prev.y) * 0.12, ny = (q.x - prev.x) * 0.12;
-        c.quadraticCurveTo(mx + nx, my + ny, q.x, q.y);
-        prev = q;
+  // eletrodutos calculados (árvore por quadro), alimentadores e centro de cargas
+  drawEletrodutos() {
+    const c = this.ctx, s = this.store, f = this.floor;
+    const ele = s.ele;
+    if (!ele) return;
+    const L = (a, b) => { const A = this.toScreen(a.x, a.y), B = this.toScreen(b.x, b.y); c.moveTo(A.x, A.y); c.lineTo(B.x, A.y); c.lineTo(B.x, B.y); return [A, B]; };
+    const ativo = s.activeCircuit?.id;
+    for (const sg of ele.segmentos) {
+      const aqui = sg.de.pav === f, la = sg.para.pav === f;
+      if (!aqui && !la) continue;
+      if (aqui && la) {
+        const um = sg.circuitos.size === 1 ? [...sg.circuitos][0] : null;
+        const destaque = ativo && sg.circuitos.has(ativo);
+        c.save();
+        c.strokeStyle = um ? corCircuito(s.project, um) : '#4a5562';
+        c.lineWidth = destaque ? 2.6 : 1.5;
+        if (ativo && !destaque) c.globalAlpha *= 0.45;
+        c.beginPath();
+        const [A, B] = L(sg.de, sg.para);
+        c.stroke();
+        c.restore();
+        if (this.scale > 26 && Math.abs(B.x - A.x) + Math.abs(B.y - A.y) > 46) {
+          const longoX = Math.abs(B.x - A.x) >= Math.abs(B.y - A.y);
+          const mx = longoX ? (A.x + B.x) / 2 : B.x, my = longoX ? A.y : (A.y + B.y) / 2;
+          const nums = [...sg.circuitos].map((id) => s.project.circuitos.find((x) => x.id === id)?.numero).filter(Boolean).sort((x, y) => x - y);
+          this.tag(`${nums.join(',')} · Ø${sg.dn}`, mx, my - 9, '#4a5562');
+          if (this.scale > 45) this.fiacao(mx, my + 1, sg.cont, longoX);
+        }
+      } else {
+        // prumada: chega ou sai deste pavimento
+        const n = aqui ? sg.de : sg.para;
+        const P = this.toScreen(n.x, n.y);
+        const sobe = (aqui ? sg.para.z : sg.de.z) > n.z;
+        this.tag(`${sobe ? '↑' : '↓'} Ø${sg.dn}`, P.x + 14, P.y + 12, '#4a5562', 'left');
       }
-      c.stroke();
-      c.restore();
     }
+    for (const al of ele.alimentadores) {
+      const pa = s.ele.redePorQuadro && al.de, pd = al.para;
+      const fa = s.project.pavimentos.find((pv) => pv.elementos.includes(pa)), fb = s.project.pavimentos.find((pv) => pv.elementos.includes(pd));
+      if (fa === f && fb === f) {
+        c.save(); c.strokeStyle = '#b05a00'; c.lineWidth = 2.4; c.setLineDash([10, 4]);
+        c.beginPath(); const [A, B] = L(pa, pd); c.stroke(); c.restore();
+        if (this.scale > 14) this.tag(`Alimentador ${al.condutores} ${String(al.secao ?? '-').replace('.', ',')} mm²`, (A.x + B.x) / 2, A.y - 10, '#b05a00');
+      }
+    }
+    const cc = ele.centros.find((x) => x.pav === f);
+    if (s.settings.centroCargas && cc?.x != null) {
+      const P = this.toScreen(cc.x, cc.y);
+      c.save(); c.strokeStyle = '#d0453a'; c.lineWidth = 1.5;
+      c.beginPath(); c.arc(P.x, P.y, 12, 0, Math.PI * 2); c.moveTo(P.x - 18, P.y); c.lineTo(P.x + 18, P.y); c.moveTo(P.x, P.y - 18); c.lineTo(P.x, P.y + 18); c.stroke();
+      c.restore();
+      this.rotulos = true;
+      this.tag(`Centro de cargas · ${Math.round(cc.P)} VA`, P.x + 16, P.y - 16, '#d0453a', 'left');
+    }
+  }
+
+  // marcas de fiação no trecho: fases, neutro, terra e retornos
+  fiacao(x, y, cont, horizontal) {
+    const c = this.ctx;
+    const marcas = [...Array(cont.F).fill('F'), ...Array(cont.N).fill('N'), ...Array(cont.T).fill('T'), ...Array(cont.R).fill('R')];
+    const passo = 5, ini = -((marcas.length - 1) * passo) / 2;
+    c.save();
+    c.lineWidth = 1.2;
+    marcas.forEach((m, i) => {
+      const d = ini + i * passo;
+      const px = horizontal ? x + d : x, py = horizontal ? y : y + d;
+      c.strokeStyle = { F: '#2b2f33', N: '#1d6fd6', T: '#1f9d55', R: '#c98a00' }[m];
+      c.beginPath();
+      if (m === 'T') { c.moveTo(px - 4, py + 4); c.lineTo(px + 4, py - 4); c.moveTo(px - 2, py + 6); c.lineTo(px + 6, py - 2); }
+      else if (m === 'N') { c.moveTo(px - 4, py + 4); c.lineTo(px + 4, py - 4); c.moveTo(px + 1, py - 4); c.lineTo(px + 4, py - 4); }
+      else { c.moveTo(px - 4, py + 4); c.lineTo(px + 4, py - 4); }
+      if (m === 'R') { c.moveTo(px + 4, py - 4); c.lineTo(px + 6, py - 1); }
+      c.stroke();
+    });
+    c.restore();
+  }
+
+  drawAmbiente(a) {
+    const c = this.ctx, s = this.store;
+    const A = this.toScreen(a.x1, a.y1), B = this.toScreen(a.x2, a.y2);
+    const sel = s.isSelected(a), hov = this.hover?.ref === a;
+    if (sel || hov) {
+      c.save(); c.fillStyle = sel ? 'rgba(29,111,214,.08)' : 'rgba(29,111,214,.04)';
+      c.fillRect(A.x, A.y, B.x - A.x, B.y - A.y);
+      c.strokeStyle = sel ? COR.sel : '#9cc0ef'; c.setLineDash([6, 4]); c.strokeRect(A.x, A.y, B.x - A.x, B.y - A.y); c.restore();
+    }
+    if (this.scale < 12) return;
+    const cx = (A.x + B.x) / 2, cy = A.y + Math.min(26, (B.y - A.y) * 0.18);
+    c.save();
+    c.textAlign = 'center';
+    c.fillStyle = '#6b7785';
+    c.font = '600 11.5px "Segoe UI", sans-serif';
+    c.fillText(a.nome, cx, cy);
+    c.font = '10.5px "Segoe UI", sans-serif';
+    c.fillText(`${fmt((a.x2 - a.x1) * (a.y2 - a.y1))} m²`, cx, cy + 13);
+    c.restore();
+    const al = s.ele?.alertas.get(a.id);
+    if (al) this.drawAlerta(cx + c.measureText(a.nome).width / 2 + 14, cy - 4, al);
+  }
+
+  drawAlerta(x, y, lista) {
+    const c = this.ctx;
+    const erro = lista.some((a) => a.nivel === 'erro');
+    c.save();
+    c.globalAlpha = Math.max(c.globalAlpha, 0.85);
+    c.fillStyle = erro ? '#d0453a' : '#f2b705';
+    c.strokeStyle = erro ? '#8f241b' : '#9a7400';
+    c.lineWidth = 0.8;
+    c.beginPath(); c.moveTo(x, y - 6); c.lineTo(x + 6, y + 5); c.lineTo(x - 6, y + 5); c.closePath(); c.fill(); c.stroke();
+    c.fillStyle = '#fff'; c.font = '700 8px sans-serif'; c.textAlign = 'center'; c.fillText('!', x, y + 4);
+    c.restore();
+  }
+
+  // texto da dica (title) para o ponto sob o mouse: alertas do elemento ou composição do eletroduto
+  dicaEm(p) {
+    const s = this.store;
+    const hit = this.hitBruto(p);
+    if (hit && (hit.kind === 'elemento' || hit.kind === 'ambiente')) {
+      const al = s.ele?.alertas.get(hit.ref.id);
+      if (al?.length) return al.map((a) => `${a.nivel === 'erro' ? '⛔' : '⚠'} ${a.texto}`).join('\n');
+      if (hit.kind === 'elemento') {
+        const t = TIPOS[hit.ref.tipo];
+        const circ = s.project.circuitos.find((ci) => ci.id === hit.ref.circuitoId);
+        return `${t.nome}${circ ? ` · ${circ.nome}` : ''}${hit.ref.potencia ? ` · ${hit.ref.potencia} VA` : ''}`;
+      }
+      return '';
+    }
+    if (!s.ele || !this.vis('ele')) return '';
+    const tol = 6 / this.scale;
+    for (const sg of s.ele.segmentos) {
+      if (sg.de.pav !== this.floor || sg.para.pav !== this.floor) continue;
+      const d = Math.min(segDist(p, { x1: sg.de.x, y1: sg.de.y, x2: sg.para.x, y2: sg.de.y }), segDist(p, { x1: sg.para.x, y1: sg.de.y, x2: sg.para.x, y2: sg.para.y }));
+      if (d > tol) continue;
+      const nums = [...sg.circuitos].map((id) => s.project.circuitos.find((x) => x.id === id)?.nome).join(', ');
+      const secs = [...new Set(sg.condutores.map((k) => String(k.secao).replace('.', ',')))].join(' / ');
+      return `Eletroduto DN ${sg.dn} · ${fmt(sg.comp)} m · ocupação ${Math.round(sg.ocupacao * 100)}%\n${sg.cont.F} fase · ${sg.cont.N} neutro · ${sg.cont.T} terra · ${sg.cont.R} retorno (${secs} mm²)\n${nums}`;
+    }
+    return '';
   }
 
   drawRedesHid() {
@@ -745,7 +893,7 @@ export class Plan2D {
     const s = this.store;
     const t = TIPOS[el.tipo];
     const p = this.toScreen(el.x, el.y);
-    const col = t.disc === 'hid' ? COR.hid : t.disc === 'est' ? COR.est : el.tipo === 'qd' ? '#34404c' : corCircuito(s.project, el.circuitoId);
+    const col = t.disc === 'hid' ? COR.hid : t.disc === 'est' ? COR.est : t.quadro || el.tipo === 'cp' ? '#34404c' : corCircuito(s.project, el.circuitoId);
     const sel = s.isSelected(el);
     const hov = this.hover && this.hover.ref === el;
     if (sel || hov) {
@@ -761,8 +909,16 @@ export class Plan2D {
     let tag;
     if (t.disc === 'ele') {
       const circ = s.project.circuitos.find((ci) => ci.id === el.circuitoId);
-      tag = el.tipo === 'qd' ? 'QD' : circ ? circ.numero + (el.tipo === 'tue' ? ` · ${el.potencia} W` : '') : '?';
-      this.chamada(tag, p.x, p.y, el.circuitoId || el.tipo === 'qd' ? col : '#d0453a', 'ele');
+      if (t.quadro || el.tipo === 'cp') tag = s.nomeQuadro ? s.nomeQuadro(el) : t.sigla;
+      else if (!circ) tag = '?';
+      else if (t.comandada) tag = `${circ.numero}${el.comando || '-'} · ${el.potencia}W`;
+      else if (COMANDOS.includes(el.tipo)) tag = `${circ.numero} ${(el.comandos || []).join('')}`.trim();
+      else if (el.tipo === 'tue') tag = `${circ.numero} · ${el.potencia} W`;
+      else if (el.tipo === 'tug') tag = `${circ.numero}${el.potencia > 100 ? ` · ${el.potencia}VA` : ''}${el.dupla ? ' ×2' : ''}`;
+      else tag = `${circ.numero}`;
+      this.chamada(tag, p.x, p.y, circ || t.quadro || el.tipo === 'cp' ? col : '#d0453a', 'ele');
+      const al = s.ele?.alertas.get(el.id);
+      if (al) this.drawAlerta(p.x - this.symSize() - 4, p.y - this.symSize() - 2, al);
     } else if (t.disc === 'hid') {
       const pt = s.hid?.af.pontos.find((x) => x.no.el === el);
       tag = t.sigla + (pt ? ` ${fmt(pt.pressao, 1)} mca` : '');
@@ -795,6 +951,37 @@ export class Plan2D {
     } else if (tipo === 'interruptor') {
       c.arc(p.x, p.y, r * 0.55, 0, Math.PI * 2); c.fill(); c.stroke();
       c.beginPath(); c.moveTo(p.x + r * 0.4, p.y - r * 0.4); c.lineTo(p.x + r * 1.2, p.y - r * 1.2); c.stroke();
+    } else if (tipo === 'arandela') {
+      c.arc(p.x, p.y, r * 0.85, Math.PI, 0); c.closePath(); c.fill(); c.stroke();
+      c.beginPath(); c.moveTo(p.x - r * 0.5, p.y - r * 0.6); c.lineTo(p.x + r * 0.5, p.y); c.moveTo(p.x + r * 0.5, p.y - r * 0.6); c.lineTo(p.x - r * 0.5, p.y); c.stroke();
+    } else if (tipo === 'ventilador') {
+      c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.beginPath();
+      for (let k = 0; k < 3; k++) { const a = (k * 2 * Math.PI) / 3; c.moveTo(p.x, p.y); c.quadraticCurveTo(p.x + Math.cos(a + 0.6) * r, p.y + Math.sin(a + 0.6) * r, p.x + Math.cos(a) * r * 0.9, p.y + Math.sin(a) * r * 0.9); }
+      c.stroke();
+    } else if (tipo === 'paralelo' || tipo === 'intermediario' || tipo === 'dimmer') {
+      c.arc(p.x, p.y, r * 0.55, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.beginPath();
+      c.moveTo(p.x + r * 0.4, p.y - r * 0.4); c.lineTo(p.x + r * 1.2, p.y - r * 1.2);
+      if (tipo !== 'dimmer') { c.moveTo(p.x - r * 0.4, p.y + r * 0.4); c.lineTo(p.x - r * 1.2, p.y + r * 1.2); }
+      if (tipo === 'intermediario') { c.moveTo(p.x - r * 0.4, p.y - r * 0.4); c.lineTo(p.x - r * 1.2, p.y - r * 1.2); c.moveTo(p.x + r * 0.4, p.y + r * 0.4); c.lineTo(p.x + r * 1.2, p.y + r * 1.2); }
+      if (tipo === 'dimmer') { c.moveTo(p.x + r * 0.8, p.y - r * 1.2); c.lineTo(p.x + r * 1.2, p.y - r * 1.2); c.lineTo(p.x + r * 1.2, p.y - r * 0.8); }
+      c.stroke();
+    } else if (tipo === 'sensor') {
+      c.arc(p.x, p.y, r * 0.8, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.beginPath(); c.arc(p.x, p.y, r * 1.3, -2.4, -0.7); c.moveTo(p.x + Math.cos(2.4) * r * 1.3, p.y + Math.sin(2.4) * r * 1.3); c.arc(p.x, p.y, r * 1.3, 2.4, 0.7, true); c.stroke();
+      c.fillStyle = col; c.font = `700 ${Math.max(6, r * 0.7)}px sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('SP', p.x, p.y + 0.5);
+    } else if (tipo === 'campainha') {
+      c.moveTo(p.x - r, p.y + r * 0.5); c.quadraticCurveTo(p.x - r, p.y - r, p.x, p.y - r); c.quadraticCurveTo(p.x + r, p.y - r, p.x + r, p.y + r * 0.5); c.closePath(); c.fill(); c.stroke();
+    } else if (tipo === 'pulsador') {
+      c.rect(p.x - r * 0.6, p.y - r * 0.6, r * 1.2, r * 1.2); c.fill(); c.stroke();
+      c.beginPath(); c.fillStyle = col; c.arc(p.x, p.y, r * 0.25, 0, Math.PI * 2); c.fill();
+    } else if (tipo === 'cp') {
+      c.rect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); c.fill(); c.stroke();
+      c.beginPath(); c.moveTo(p.x - r * 0.8, p.y); c.lineTo(p.x + r * 0.8, p.y); c.stroke();
+    } else if (tipo === 'qm' || tipo === 'es') {
+      c.rect(p.x - r * 1.2, p.y - r * 0.8, r * 2.4, r * 1.6); c.fill(); c.stroke();
+      c.fillStyle = col; c.font = `700 ${Math.max(6, r * 0.8)}px sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(tipo === 'qm' ? 'M' : 'ES', p.x, p.y + 0.5);
     } else if (tipo === 'qd') {
       c.rect(p.x - r * 1.2, p.y - r * 0.7, r * 2.4, r * 1.4); c.fill(); c.stroke();
       c.beginPath(); c.moveTo(p.x - r * 1.2, p.y - r * 0.7); c.lineTo(p.x + r * 1.2, p.y + r * 0.7); c.lineTo(p.x - r * 1.2, p.y + r * 0.7); c.closePath();

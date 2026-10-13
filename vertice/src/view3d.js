@@ -230,7 +230,7 @@ export class View3D {
       for (const el of pav.elementos) {
         const t = TIPOS[el.tipo];
         if (!t || el.tipo === 'pilar' || !vis(t.disc)) continue;
-        if (el.tipo === 'qd') {
+        if (t.quadro) {
           // quadro: caixa laranja com moldura clara
           const grp = new THREE.Group();
           grp.add(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.8, 0.12), new THREE.MeshStandardMaterial({ color: 0xf2f2f0, roughness: 0.6 })));
@@ -268,23 +268,29 @@ export class View3D {
       m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), q.clone().sub(p).normalize());
       add(m);
     };
-    if (vis('ele')) for (const r of results) {
-      if (!r.qd) continue;
-      const pav = project.pavimentos.find((p) => p.elementos.includes(r.qd));
-      if (!pav || (settings.so3dAteAtual && project.pavimentos.indexOf(pav) > atual)) continue;
-      const yc = pav.cota + pav.peDireito - 0.12;
-      const raio = 0.0125;
+    if (vis('ele') && this.store.ele) {
       const V = (x, y, z) => new THREE.Vector3(x, y, z);
-      tuboReto(V(r.qd.x, pav.cota + r.qd.altura + 0.4, r.qd.y), V(r.qd.x, yc, r.qd.y), raio, eletroduto);
-      let prev = V(r.qd.x, yc, r.qd.y);
-      for (const e of r.rota) {
-        const topo = V(e.x, yc, e.y);
-        // trecho em L pelo forro (primeiro x, depois z)
-        const meio = V(e.x, yc, prev.z);
-        tuboReto(prev, meio, raio, eletroduto);
-        tuboReto(meio, topo, raio, eletroduto);
-        if (e.altura < pav.peDireito - 0.25) tuboReto(topo, V(e.x, pav.cota + e.altura + 0.06, e.y), raio, eletroduto);
-        prev = topo;
+      const visivel = (pav) => !(settings.so3dAteAtual && project.pavimentos.indexOf(pav) > atual);
+      for (const sg of this.store.ele.segmentos) {
+        const a = sg.de, b = sg.para;
+        if (!visivel(a.pav) || !visivel(b.pav)) continue;
+        const raio = Math.max(0.01, sg.dn / 2000);
+        if (a.pav === b.pav) {
+          const yc = a.pav.cota + a.pav.peDireito - 0.12;
+          const pA = V(a.x, Math.min(a.z, yc), a.y), pB = V(b.x, Math.min(b.z, yc), b.y);
+          const topoA = V(a.x, yc, a.y), quina = V(b.x, yc, a.y), topoB = V(b.x, yc, b.y);
+          tuboReto(pA, topoA, raio, eletroduto); tuboReto(topoA, quina, raio, eletroduto); tuboReto(quina, topoB, raio, eletroduto); tuboReto(topoB, pB, raio, eletroduto);
+        } else {
+          tuboReto(V(a.x, a.z, a.y), V(b.x, a.z, a.y), raio, eletroduto);
+          tuboReto(V(b.x, a.z, a.y), V(b.x, b.z, b.y), raio, eletroduto);
+        }
+      }
+      const alim = new THREE.MeshStandardMaterial({ color: 0xd9822b, roughness: 0.5 });
+      for (const al of this.store.ele.alimentadores) {
+        const pa = project.pavimentos.find((pv) => pv.elementos.includes(al.de)), pb = project.pavimentos.find((pv) => pv.elementos.includes(al.para));
+        if (!pa || !pb || !visivel(pa) || !visivel(pb)) continue;
+        const A = V(al.de.x, pa.cota + 0.3, al.de.y), B = V(al.para.x, pb.cota + 0.3, al.para.y), M = V(al.para.x, pa.cota + 0.3, al.de.y);
+        tuboReto(A, M, 0.025, alim); tuboReto(M, B, 0.025, alim);
       }
     }
 

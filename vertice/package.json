@@ -1,6 +1,6 @@
 {
   "name": "vertice",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Projeto el\u00e9trico predial com planta 2D e vista 3D",
   "main": "main.js",
   "scripts": {

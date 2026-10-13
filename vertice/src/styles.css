@@ -59,6 +59,8 @@ button { font: inherit; color: inherit; }
 .rb-field { display: grid; grid-template-columns: auto 1fr; gap: 3px 6px; align-items: center; padding: 3px 4px 0; min-width: 150px; }
 .rb-field label { color: var(--muted); font-size: 11px; }
 .rb-field.wide { min-width: 220px; }
+#sel-circuito { max-width: 200px; }
+.rb-field select { max-width: 210px; }
 select, input { font: inherit; color: var(--text); border: 1px solid #c9cdd2; border-radius: 2px; padding: 2px 4px; background: #fff; height: 21px; }
 select:focus, input:focus { outline: 1px solid var(--acc); border-color: var(--acc); }
 input[type=range] { height: auto; padding: 0; }
@@ -160,7 +162,7 @@ input[type=range] { height: auto; padding: 0; }
 /* modal */
 #modal { position: fixed; inset: 0; background: rgba(30, 40, 50, .28); display: flex; align-items: center; justify-content: center; z-index: 10; }
 #modal[hidden] { display: none; }
-.modal-card { width: min(980px, 92vw); max-height: 86vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #b9bec4; box-shadow: 0 12px 40px rgba(0,0,0,.2); }
+.modal-card { width: min(1180px, 94vw); max-height: 86vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #b9bec4; box-shadow: 0 12px 40px rgba(0,0,0,.2); }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 6px 6px 12px; font-size: 12.5px; background: var(--title); border-bottom: 1px solid var(--line); }
 .modal-head button { border: 0; background: none; font-size: 18px; cursor: pointer; color: var(--muted); }
 #modal-body { overflow: auto; padding: 12px 14px; user-select: text; }
@@ -168,8 +170,8 @@ input[type=range] { height: auto; padding: 0; }
 .btn { border: 1px solid #b9bec4; background: #fff; padding: 3px 16px; border-radius: 2px; cursor: pointer; min-width: 80px; }
 .btn:hover { background: var(--hover); border-color: #8fb6ec; }
 .btn.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
-table.report { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-table.report th, table.report td { border: 1px solid var(--line); padding: 3px 8px; text-align: right; white-space: nowrap; }
+table.report { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+table.report th, table.report td { border: 1px solid var(--line); padding: 3px 6px; text-align: right; white-space: nowrap; }
 table.report th { background: var(--panel-2); text-align: center; font-weight: 600; }
 table.report td.l { text-align: left; }
 table.report tfoot td { font-weight: 600; background: var(--panel-2); }
