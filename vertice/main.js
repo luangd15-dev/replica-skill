@@ -63,6 +63,15 @@ ipcMain.handle('file:export', async (e, { content, defaultName, ext, label }) =>
   return r.filePath;
 });
 
+// arquivos binários (planilhas XLSX)
+ipcMain.handle('file:exportBin', async (e, { bytes, defaultName, ext, label }) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const r = await dialog.showSaveDialog(win, { defaultPath: defaultName, filters: [{ name: label, extensions: [ext] }] });
+  if (r.canceled || !r.filePath) return null;
+  fs.writeFileSync(r.filePath, Buffer.from(bytes));
+  return r.filePath;
+});
+
 // ---------------------------------------------------------------- DWG / DXF
 // Conversão DWG <-> DXF pelo LibreDWG (GPL-3.0), executado como programa separado.
 function libredwgDir() {
@@ -142,7 +151,11 @@ ipcMain.handle('pdf:salvar', async (e, { html, nome }) => {
     fs.writeFileSync(tmp, html, 'utf8');
     await off.loadFile(tmp);
     const largo = /<svg[^>]+width="(\d+)"/.exec(html);
-    const pdf = await off.webContents.printToPDF({ pageSize: 'A4', landscape: !!(largo && Number(largo[1]) > 800) || /Quadro de cargas/.test(html), printBackground: true, margins: { marginType: 'default' } });
+    // pranchas: tamanho da folha definido no CSS (@page), sem margens
+    const prancha = /@page p?A\d/.test(html);
+    const pdf = await off.webContents.printToPDF(prancha
+      ? { preferCSSPageSize: true, printBackground: true, margins: { marginType: 'none' } }
+      : { pageSize: 'A4', landscape: !!(largo && Number(largo[1]) > 800) || /Quadro de cargas/.test(html), printBackground: true, margins: { marginType: 'default' } });
     fs.writeFileSync(r.filePath, pdf);
     return { path: r.filePath };
   } catch (err) {

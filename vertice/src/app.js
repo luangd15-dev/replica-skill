@@ -1,8 +1,12 @@
 import { ICONS } from './icons.js';
-import { Plan2D, corCircuito, fmt } from './plan2d.js';
+import { Plan2D, corCircuito, fmt, chaveSeg, indicacoesPavimento, renderizarPlanta } from './plan2d.js';
 import { View3D } from './view3d.js';
 import { TIPOS, DISCIPLINAS, AMBIENTES } from './tipos.js';
-import { calcularEletrica, listaMateriais, fmtSec, nomeQuadro, ESQUEMAS, minimosAmbiente, dentroDe } from './eletrico.js';
+import { calcularEletrica, listaMateriais, fmtSec, nomeQuadro, ESQUEMAS, minimosAmbiente, dentroDe, MODULOS_QD, MATERIAIS_ELETRODUTO, configEletrica } from './eletrico.js';
+import { svgQuadroExecutivo, svgMultifilar, svgUnifilarGeral, quadroDemanda, legendaFiacao } from './documentos.js';
+import { gerarPranchas, FOLHAS } from './prancha.js';
+import { exportarIfc } from './ifc.js';
+import { gerarXlsx } from './xlsx.js';
 import { LUMINARIAS, metodoLumens, posicoesLuminarias, planoTomadas, relatorioLuminotecnico } from './luminotecnico.js';
 import { svgUnifilar } from './unifilar.js';
 import { calcularHidraulica, materiaisHidraulica, TUBOS_AF } from './hidraulico.js';
@@ -57,6 +61,8 @@ function projetoExemplo() {
       E('luz', 7.5, 6.5, { circuitoId: 'C2', comando: 'e', potencia: 220 }), E('interruptor', 6.4, 4.4, { circuitoId: 'C2', comandos: ['e'] }),
       E('luz', 10.5, 6.5, { circuitoId: 'C2', comando: 'f', potencia: 220, altura: 2.8 }), E('interruptor', 9.4, 4.4, { circuitoId: 'C2', comandos: ['f'] }),
       E('tue', 11.6, 7.8, { circuitoId: 'C8', potencia: 5500, altura: 2.2 }),
+      // caixa de passagem no forro: divide o trecho longo até o chuveiro (máx. 15 m menos 3 m por curva)
+      E('cp', 8.8, 4.3, { altura: 2.7 }),
       // hidrossanitário: banheiro (9-12 × 4-9), cozinha (6-12 × 0-4), serviço (6-9 × 4-9)
       E('reservatorio', 10.5, 6.5, { altura: 4.6 }),
       E('chuveiro', 11.3, 8.3), E('bacia', 9.5, 8.4), E('lavatorio', 9.5, 5),
@@ -99,7 +105,7 @@ function normalizar(p) {
   p.eletrica = { tensaoFN: 127, tensaoFF: 220, quedaMax: 4, quedaAlim: 1, temperatura: 30, ...(p.eletrica || {}) };
   p.circuitos ||= [];
   for (const pv of p.pavimentos) {
-    pv.vigas ||= []; pv.lajes ||= []; pv.elementos ||= []; pv.paredes ||= []; pv.desenho ||= []; pv.ambientes ||= [];
+    pv.vigas ||= []; pv.lajes ||= []; pv.elementos ||= []; pv.paredes ||= []; pv.desenho ||= []; pv.ambientes ||= []; pv.eletrodutos ||= [];
     pv.id ||= 'PV' + Math.random().toString(36).slice(2, 8);
   }
   p.pavimentos.sort((a, b) => a.cota - b.cota);
@@ -116,7 +122,7 @@ const store = {
     grid: true, snap: true, orto: true,
     vis: { arq: true, est: true, ele: true, hid: true, spda: true, fundo: true },
     chamada: { ele: 'simples', hid: 'circulo', est: 'retangulo' },
-    filtro: 'todos', so3dAteAtual: false, planos3d: false, orto3d: false, fundo3d: '#f4f6f9', corte: null, escala: 50, altura: null, subrede: null,
+    filtro: 'todos', otimizar: true, indicacaoNumerica: false, planta: 'completa', so3dAteAtual: false, planos3d: false, orto3d: false, fundo3d: '#f4f6f9', corte: null, escala: 50, altura: null, subrede: null,
   },
   rede: 'ele',
   results: [], ele: null, hid: null, spda: null, est: null,
@@ -195,7 +201,7 @@ const store = {
     this.selection = sel;
     if (sel?.kind === 'elemento' && sel.ref.circuitoId && !silent) this.activeCircuitId = sel.ref.circuitoId;
     plan.render(); renderProps(); renderTree(); syncCircuitSelect();
-    if (sel && ['elemento', 'parede', 'viga', 'laje', 'desenho', 'ambiente', 'multi'].includes(sel.kind)) mostrarPainelSeSelecao();
+    if (sel && ['elemento', 'parede', 'viga', 'laje', 'desenho', 'ambiente', 'multi', 'eletroduto'].includes(sel.kind)) mostrarPainelSeSelecao();
   },
   selectMany(itens, add) {
     const atual = add ? this.selItens() : [];
@@ -378,9 +384,15 @@ const GRUPOS_LANCAMENTO = {
       small(tool('luz', 'Lâmpada')), small(tool('interruptor', 'Interruptor')), small(tool('paralelo', 'Paralelo')),
       small(tool('tug', 'Tomada TUG')), small(tool('tue', 'Tomada TUE')), small(tool('arandela', 'Arandela')),
     ] },
+    { label: 'Conduto', items: [
+      tool('eletroduto', 'Eletroduto'),
+      small(tool('cp', 'Caixa de passagem')),
+      small({ id: 'caixaPassagem', label: 'Caixas automáticas', run: () => inserirCaixasPassagem() }),
+      small({ id: 'dimensionar', label: 'Dimensionar eletrodutos', run: () => relatorioEletrodutos() }),
+    ] },
     { label: 'Lançamento automático', items: [
-      tool('distLuz', 'Distribuir lâmpadas'), tool('distTom', 'Distribuir tomadas'),
-      { id: 'ambientes', label: 'Ambientes', run: () => reconhecerAmbientes() },
+      small(tool('distLuz', 'Distribuir lâmpadas')), small(tool('distTom', 'Distribuir tomadas')),
+      small({ id: 'ambientes', label: 'Ambientes', run: () => reconhecerAmbientes() }),
     ] },
     { label: 'Circuitos e comandos', items: [
       { id: 'circuito', label: 'Novo circuito', run: () => novoCircuito() },
@@ -389,7 +401,7 @@ const GRUPOS_LANCAMENTO = {
       { field: 'circuito-ativo' },
     ] },
     { label: 'Cálculo', items: [
-      { id: 'dimensionar', label: 'Processar', run: () => relatorioCargas() },
+      { id: 'processar', label: 'Processar', run: () => dialogoProcessar() },
       small({ id: 'verificar', label: 'Verificar', run: () => relatorioVerificacoes() }),
       small({ id: 'luminotecnico', label: 'Luminotécnico', run: () => relatorioLuminotecnicoGeral() }),
       small({ id: 'memorial', label: 'Memorial', run: () => memorialDescritivo() }),
@@ -485,16 +497,46 @@ const RIBBON = [
   ] },
   { tab: 'OPERAÇÕES', groups: () => [
     { label: 'Dimensionamento', items: [
-      { id: 'cargas', label: 'Quadro de cargas', run: () => relatorioCargas() },
-      { id: 'unifilar', label: 'Diagrama unifilar', run: () => diagramaUnifilar() },
-      small({ id: 'luminotecnico', label: 'Luminotécnico', run: () => relatorioLuminotecnicoGeral() }), small({ id: 'memorial', label: 'Memorial descritivo', run: () => memorialDescritivo() }),
-      small({ id: 'gerenciador', label: 'Gerenciador', run: () => mostrarPainel('gerenciador') }),
-      small({ id: 'calcEst', label: 'Vigas', run: () => relatorioVigas() }), small({ id: 'pilar', label: 'Pilares', run: () => relatorioPilares() }), small({ id: 'fundacao', label: 'Fundações', run: () => relatorioFundacoes() }),
-      small({ id: 'hidro', label: 'Água fria', run: () => relatorioAguaFria() }), small({ id: 'esgoto', label: 'Esgoto', run: () => relatorioEsgoto() }), small({ id: 'malha', label: 'SPDA', run: () => relatorioSpda() }),
+      { id: 'processar', label: 'Processar', run: () => dialogoProcessar() },
+      small({ id: 'dimensionar', label: 'Dimensionar eletrodutos', run: () => relatorioEletrodutos() }),
+      small({ id: 'caixaPassagem', label: 'Caixas de passagem', run: () => inserirCaixasPassagem() }),
+      small({ id: 'verificar', label: 'Verificar projeto', run: () => relatorioVerificacoes() }),
     ] },
-    { label: 'Verificação', items: [{ id: 'verificar', label: 'Verificar projeto', run: () => relatorioVerificacoes() }] },
-    { label: 'Quantitativos', items: [{ id: 'materiais', label: 'Lista de materiais', run: () => relatorioMateriais() }] },
-    { label: 'Exportar', items: [{ id: 'exportar', label: 'Relatório HTML', run: () => exportarRelatorioCompleto() }, { id: 'exportarCad', label: 'DWG / DXF', run: () => exportarCad(true) }] },
+    { label: 'Gerenciador', items: [
+      small({ id: 'gerenciador', label: 'Gerenciador', run: () => mostrarPainel('gerenciador') }),
+      small({ id: 'renumerar', label: 'Renumerar circuitos', run: () => renumerarCircuitos() }),
+      small({ id: 'eliminar', label: 'Eliminar não utilizados', run: () => eliminarNaoUtilizados() }),
+    ] },
+    { label: 'Tabelas', items: [
+      { id: 'materiais', label: 'Lista de materiais', run: () => relatorioMateriais() },
+      small({ id: 'cargas', label: 'Quadro de cargas', run: () => relatorioCargas() }),
+      small({ id: 'demanda', label: 'Quadro de demanda', run: () => relatorioDemanda() }),
+      small({ id: 'legenda', label: 'Legenda de fiação', run: () => relatorioLegendaFiacao() }),
+      small({ id: 'simbolos', label: 'Legenda de símbolos', run: () => relatorioSimbolos() }),
+      small({ id: 'luminotecnico', label: 'Luminotécnico', run: () => relatorioLuminotecnicoGeral() }),
+    ] },
+    { label: 'Diagramas', items: [
+      { id: 'unifilar', label: 'Diagrama unifilar', run: () => diagramaUnifilar() },
+      small({ id: 'unifilar', label: 'Unifilar geral', run: () => diagramaUnifilarGeral() }),
+      small({ id: 'multifilar', label: 'Multifilar', run: () => diagramaMultifilar() }),
+      small({ id: 'executivo', label: 'Quadro executivo', run: () => quadroExecutivo() }),
+    ] },
+    { label: 'Exibir', items: [
+      { field: 'planta' },
+      small({ id: 'numerica', label: 'Indicação numérica', run: () => toggleSetting('indicacaoNumerica'), active: () => store.settings.indicacaoNumerica }),
+      small({ id: 'otimizar', label: 'Otimizar indicações', run: () => toggleSetting('otimizar'), active: () => store.settings.otimizar !== false }),
+    ] },
+    { label: 'Disciplinas', items: [{ id: 'predio', label: 'Outras disciplinas', menu: [
+      { id: 'calcEst', label: 'Vigas', run: () => relatorioVigas() }, { id: 'pilar', label: 'Pilares', run: () => relatorioPilares() }, { id: 'fundacao', label: 'Fundações', run: () => relatorioFundacoes() },
+      { id: 'hidro', label: 'Água fria', run: () => relatorioAguaFria() }, { id: 'esgoto', label: 'Esgoto', run: () => relatorioEsgoto() }, { id: 'malha', label: 'SPDA', run: () => relatorioSpda() },
+    ] }] },
+    { label: 'Entrega', items: [
+      { id: 'prancha', label: 'Pranchas', run: () => dialogoPranchas() },
+      small({ id: 'memorial', label: 'Memorial descritivo', run: () => memorialDescritivo() }),
+      small({ id: 'ifc', label: 'Exportar IFC (BIM)', run: () => exportarModeloIfc() }),
+      small({ id: 'exportarCad', label: 'DWG / DXF', run: () => exportarCad(true) }),
+      small({ id: 'exportar', label: 'Relatório HTML', run: () => exportarRelatorioCompleto() }),
+    ] },
   ] },
 ];
 const ARQUIVO = () => [
@@ -509,7 +551,12 @@ const ARQUIVO = () => [
     { id: 'exportarCad', label: 'Exportar pavimento', run: () => exportarCad(false) },
     { id: 'exportarCad', label: 'Exportar todos', run: () => exportarCad(true) },
   ] },
-  { label: 'Relatórios', items: [{ id: 'exportar', label: 'Relatório HTML', run: () => exportarRelatorioCompleto() }] },
+  { label: 'Entrega', items: [
+    { id: 'prancha', label: 'Pranchas (PDF)', run: () => dialogoPranchas() },
+    { id: 'ifc', label: 'Exportar IFC', run: () => exportarModeloIfc() },
+    { id: 'exportar', label: 'Relatório HTML', run: () => exportarRelatorioCompleto() },
+  ] },
+  { label: 'Projeto', items: [{ id: 'configuracoes', label: 'Configurações', run: () => { store.select({ kind: 'projeto' }); mostrarPainel('propriedades'); } }] },
 ];
 const todosItens = () => [...RIBBON.flatMap((t) => t.groups()), ...Object.values(GRUPOS_LANCAMENTO).flat()].flatMap((g) => g.items.flatMap((i) => [i, ...(i.menu || [])]));
 const RIBBON_LABEL = {};
@@ -539,7 +586,7 @@ function renderRibbon() {
       if (it.field) { col = null; items.appendChild(campoRibbon(it.field)); continue; }
       const b = document.createElement('button');
       b.className = it.small ? 'sb' : 'rb';
-      b.innerHTML = ICONS[it.id] + `<span>${esc(it.label)}</span>` + (it.menu ? '<span class="dd">▼</span>' : '');
+      b.innerHTML = (ICONS[it.icon || it.id] || ICONS.ponto) + `<span>${esc(it.label)}</span>` + (it.menu ? '<span class="dd">▼</span>' : '');
       b.title = it.label;
       if (it.tool) { b.dataset.tool = it.id; if (plan.tool === it.id) b.classList.add('active'); b.onclick = () => store.setTool(it.id); }
       else if (it.menu) b.onclick = () => abrirMenu(b, it.menu);
@@ -609,6 +656,10 @@ function campoRibbon(tipo) {
       <label></label><button class="btn" id="sel-apenas" style="min-width:0;padding:1px 8px">Selecionar apenas</button>`;
     f.querySelector('#sel-filtro').onchange = (e) => { store.settings.filtro = e.target.value; log(`Filtro de seleção: ${e.target.selectedOptions[0].text}.`); };
     f.querySelector('#sel-apenas').onclick = () => selecionarTudo(true);
+  } else if (tipo === 'planta') {
+    const op = [['completa', 'Completa'], ['iluminacao', 'Iluminação (luz)'], ['tomadas', 'Tomadas (força)'], ['alimentacao', 'Alimentação']];
+    f.innerHTML = `<label>Planta</label><select id="sel-planta">${op.map(([v, n]) => `<option value="${v}"${(store.settings.planta || 'completa') === v ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+    f.querySelector('select').onchange = (e) => { store.settings.planta = e.target.value; plan.render(); log(`Planta exibida: ${e.target.selectedOptions[0].text}.`); };
   } else if (tipo === 'fundo3d') {
     const op = [['#f4f6f9', 'Claro'], ['#ffffff', 'Branco'], ['#c9d3de', 'Cinza'], ['#20262d', 'Escuro']];
     f.innerHTML = `<label>Fundo</label><select>${op.map(([v, n]) => `<option value="${v}"${store.settings.fundo3d === v ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
@@ -854,7 +905,7 @@ function renderProps() {
         const outros = quadrosDoProjeto().filter((q) => q !== e && q.tipo !== 'qd' || (q !== e && q.tipo === 'qd' && e.tipo === 'qd'));
         html += `${th('Quadro')}${row('Esquema', opts('esquema', e.esquema || '2F+N', Object.keys(ESQUEMAS).map((k) => [k, k])))}
           ${e.tipo !== 'es' ? row('Alimentado por', opts('alimentadoPor', e.alimentadoPor || '', [['', '(nenhum)'], ...outros.map((q) => [q.id, store.nomeQuadro(q)])])) : ''}
-          ${e.tipo === 'qd' ? row('DPS', sim('dps', e.dps !== false)) : ''}`;
+          ${e.tipo === 'qd' ? row('DPS', sim('dps', e.dps !== false)) + row('Peça (módulos DIN)', opts('modulosPeca', e.modulosPeca ?? '', [['', 'Automático'], ...MODULOS_QD.map((m) => [m, `${m} módulos`])], 'data-num="1"')) : ''}`;
         if (rq) {
           html += `${th('Cargas')}${row('Instalada', ro(`${fmt(rq.instaladaTotal, 0)} VA`))}${row('Demanda', ro(`${fmt(rq.demanda, 0)} VA`))}
             ${rq.fasesQ.map((f) => row(`Fase ${f}`, ro(`${fmt(rq.fases[f], 0)} VA`))).join('')}
@@ -866,7 +917,7 @@ function renderProps() {
             ${row('Reservas', ro(`${rq.reservas} (mínimo ${rq.reservasMin})`, rq.reservas < rq.reservasMin ? 'var(--danger)' : ''))}
             ${row('Módulos DIN', ro(`${rq.modulos} → quadro de ${rq.tamanho}`))}` : ''}`;
         }
-        html += avisos(alertasDe(e.id)) + '</table>' + (e.tipo === 'qd' ? botoes([['unifilar', 'Diagrama unifilar'], ['novoCircuitoQd', 'Novo circuito'], ['reservaQd', 'Nova reserva']]) : '');
+        html += avisos(alertasDe(e.id)) + '</table>' + (e.tipo === 'qd' ? botoes([['unifilar', 'Diagrama unifilar'], ['multifilar', 'Multifilar'], ['executivo', 'Quadro executivo'], ['demanda', 'Quadro de demanda'], ['novoCircuitoQd', 'Novo circuito'], ['reservaQd', 'Nova reserva']]) : '');
       } else if (t.disc === 'ele' && e.tipo !== 'cp') {
         const circs = [['', '(sem circuito)'], ...store.project.circuitos.filter((c) => c.tipo !== 'RESERVA').map((c) => [c.id, c.nome])];
         if (t.carga) html += row(e.tipo === 'tue' ? 'Potência (W)' : 'Potência (VA)', inp('potencia', e.potencia, 'number', '10'));
@@ -928,6 +979,27 @@ function renderProps() {
       ${row('Paredes', ro(pv.paredes.length))}${row('Ambientes', ro(pv.ambientes.length))}${row('Elementos', ro(pv.elementos.length))}${row('Vigas / lajes', ro(`${pv.vigas.length} / ${pv.lajes.length}`))}
       ${pv.fundo ? row('Referência', ro(pv.fundo.arquivo)) : ''}</table>
       ${store.project.pavimentos.length > 1 ? botoes([['delPav', 'Excluir pavimento']]) : ''}`;
+  } else if (sel.kind === 'eletroduto') {
+    const sg = store.ele.segmentos.find((x) => chaveSeg(x) === sel.chave);
+    if (!sg) html = '<table class="props"><tr><td colspan="2" class="nota">O trecho mudou com o recálculo. Selecione-o de novo.</td></tr></table>';
+    else {
+      const nome = (n) => (TIPOS[n.el.tipo]?.quadro ? store.nomeQuadro(n.el) : `${TIPOS[n.el.tipo]?.nome || n.el.tipo}`);
+      const ligs = sg.condutores.map((k) => {
+        const c = store.project.circuitos.find((x) => x.id === k.circuito);
+        const r = store.results.find((x) => x.circuito.id === k.circuito);
+        return `<tr><td>${esc(c?.numero ?? '?')}</td><td>${{ F: 'Fase', N: 'Neutro', T: 'Terra', R: `Retorno ${k.comando || ''}` }[k.tipo]}</td><td>${fmtSec(k.secao)}</td><td>${k.tipo === 'F' && r ? fmt(r.ib) : '—'}</td></tr>`;
+      }).join('');
+      html = `<table class="props">${th('Eletroduto')}${row('Trecho', ro(`${nome(sg.de)} → ${nome(sg.para)}`))}${row('Material', ro(store.ele.cfg.material))}
+        ${row('Passa pelo', ro(sg.nivel === 'piso' ? 'piso' : 'forro'))}${row('Lançamento', ro(sg.manual ? 'manual' : 'automático'))}
+        ${th('Dimensionamento')}${row('Diâmetro', ro(`DN ${sg.dn}`))}${row('Área útil', ro(`${fmt(sg.areaUtil, 1)} mm²`))}${row('Área dos condutores', ro(`${fmt(sg.areaOcupada, 1)} mm²`))}
+        ${row('Taxa de ocupação', ro(`${fmt(sg.ocupacao * 100, 0)} % (máx. ${fmt(sg.taxaMax * 100, 0)} %)`, sg.ocupacao > sg.taxaMax ? 'var(--danger)' : 'var(--ok)'))}
+        ${th('Comprimento')}${row('Comprimento do trecho', ro(`${fmt(sg.comp, 1)} m`))}${row('Número de curvas', ro(sg.curvas, sg.curvas > 3 ? 'var(--danger)' : ''))}
+        ${row('Comprimento máximo', ro(`${fmt(Math.max(0, sg.maxComp), 0)} m`, sg.excede ? 'var(--danger)' : 'var(--ok)'))}
+        ${sg.excede ? `<tr><td colspan="2" class="aviso">Acima do máximo entre caixas (NBR 5410 6.2.11.1.6): insira uma caixa de passagem no trecho.</td></tr>` : ''}
+        </table>
+        <table class="props lig"><tr class="cab"><td>Circ.</td><td>Condutor</td><td>mm²</td><td>Ib (A)</td></tr>${ligs}</table>
+        ${botoes([...(sg.excede ? [['cpTrecho', 'Inserir caixa de passagem']] : []), ...(sg.manual ? [['soltaTrecho', 'Liberar trecho (automático)']] : [['fixaTrecho', 'Fixar trecho']])])}`;
+    }
   } else if (sel.kind === 'circuito' && sel.ref) {
     const c = sel.ref;
     const r = store.results.find((x) => x.circuito.id === c.id);
@@ -938,10 +1010,11 @@ function renderProps() {
       ${row('Tipo', opts('tipo', c.tipo, [['ILUM', 'Iluminação'], ['TUG', 'Tomadas de uso geral'], ['TUE', 'Tomada de uso específico'], ['RESERVA', 'Reserva']]))}
       ${row('Quadro', opts('quadroId', c.quadroId || '', [['', '(automático)'], ...qds.map((q) => [q.id, store.nomeQuadro(q)])]))}
       ${row('Ligação', opts('polos', polos, [[1, `F+N (${cfg.tensaoFN} V)`], [2, `F+F (${cfg.tensaoFF} V)`], [3, `3F (${cfg.tensaoFF} V)`]], 'data-num="1"'))}
-      ${row('Fase(s)', opts('fase', c.fase || 'auto', [['auto', 'Automático (balancear)'], ...fasesOp.map((f) => [f, f])]))}
+      ${row(c.faseCalculada ? 'Fase(s) — balanceada' : 'Fase(s)', opts('fase', c.fase || 'auto', [['auto', 'Automático (balancear)'], ...fasesOp.map((f) => [f, f])]))}
       ${row('DR', opts('dr', c.dr || 'auto', [['auto', 'Automático (NBR 5410)'], ['sim', 'Sim'], ['nao', 'Não']]))}
       ${c.tipo !== 'RESERVA' ? row('Eletroduto exclusivo', opts('exclusivo', c.exclusivo ?? (c.tipo === 'TUE' ? 'true' : 'false'), [['true', 'Sim'], ['false', 'Não']], 'data-bool="1"')) : ''}
-      ${c.tipo === 'RESERVA' ? row('Potência prevista (VA)', inp('potencia', c.potencia, 'number', '100')) : row('Seção mínima', opts('secaoMin', c.secaoMin ?? '', [['', 'Padrão (1,5 / 2,5)'], [1.5, '1,5 mm²'], [2.5, '2,5 mm²'], [4, '4 mm²'], [6, '6 mm²'], [10, '10 mm²']], 'data-num="1"'))}
+      ${c.tipo === 'RESERVA' ? row('Potência prevista (VA)', inp('potencia', c.potencia, 'number', '100')) : row('Seção mínima', opts('secaoMin', c.secaoMin ?? '', [['', 'Padrão (1,5 / 2,5)'], [1.5, '1,5 mm²'], [2.5, '2,5 mm²'], [4, '4 mm²'], [6, '6 mm²'], [10, '10 mm²']], 'data-num="1"'))
+        + row('Seção fixada', opts('secaoFixa', c.secaoFixa ?? '', [['', 'Não (dimensionar)'], ...[1.5, 2.5, 4, 6, 10, 16, 25].map((v) => [v, `${fmtSec(v)} mm²`])], 'data-num="1"'))}
       ${r && !r.reserva ? `${th('Dimensionamento')}${row('Pontos', ro(r.pontos.length))}${row('Potência', ro(`${fmt(r.potencia, 0)} VA`))}${row('Fases', ro(r.fases.join('')))}
       ${row('Corrente de projeto Ib', ro(`${fmt(r.ib)} A`))}${row('Comprimento (eletrodutos)', ro(`${fmt(r.comprimento, 1)} m`))}
       ${row('Agrupamento', ro(`${r.agrupamento} circuito(s) → f = ${fmt(r.fAgr)}`))}
@@ -950,12 +1023,20 @@ function renderProps() {
       ${row('DR', ro(r.dr ? `sim${r.drGrupo ? ` (DR${r.drGrupo})` : ''}${r.drObrigatorio ? ` — obrigatório: ${r.drMotivo}` : ''}` : 'não'))}${avisos(r.avisos)}` : ''}</table>
     ${botoes([['definir', 'Definir circuito'], ['localizar', 'Localizar pontos'], ['delCirc', 'Excluir circuito']])}`;
   } else if (sel.kind === 'projeto') {
-    html = `<table class="props">${th('Projeto')}${row('Nome', inp('nome', store.project.nome, 'text'))}${row('Responsável técnico', inp('autor', store.project.autor || '', 'text'))}
+    const ce = configEletrica(store.project);
+    const pe = (k, label, step) => `<tr><td>${esc(label)}</td><td><input data-k="${k}" data-obj="eletrica" type="number" step="${step}" value="${ce[k]}"></td></tr>`;
+    html = `<table class="props">${th('Projeto')}${row('Nome', inp('nome', store.project.nome, 'text'))}${row('Proprietário', inp('proprietario', store.project.proprietario || '', 'text'))}
+      ${row('Endereço', inp('endereco', store.project.endereco || '', 'text'))}${row('Responsável técnico', inp('autor', store.project.autor || '', 'text'))}${row('Registro (CREA/CAU)', inp('registro', store.project.registro || '', 'text'))}
       ${row('Pavimentos', ro(store.project.pavimentos.length))}${row('Circuitos', ro(store.project.circuitos.length))}
       ${th('Elétrico')}${row('Tensões', `<select data-k="tensoes" data-obj="eletrica">${[['127/220', '127 / 220 V'], ['220/380', '220 / 380 V']].map(([v, l]) => `<option value="${v}"${`${cfg.tensaoFN}/${cfg.tensaoFF}` === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`)}
       <tr><td>Queda máx. circuitos (%)</td><td><input data-k="quedaMax" data-obj="eletrica" type="number" step="0.5" value="${cfg.quedaMax}"></td></tr>
       <tr><td>Queda máx. alimentadores (%)</td><td><input data-k="quedaAlim" data-obj="eletrica" type="number" step="0.5" value="${cfg.quedaAlim}"></td></tr>
       <tr><td>Temperatura ambiente (°C)</td><td><input data-k="temperatura" data-obj="eletrica" type="number" step="5" value="${cfg.temperatura}"></td></tr>
+      ${th('Eletrodutos')}${row('Material', `<select data-k="material" data-obj="eletrica">${MATERIAIS_ELETRODUTO.map((m) => `<option${m === ce.material ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select>`)}
+      ${row('Diâmetro mínimo', `<select data-k="diametroMin" data-obj="eletrica" data-num="1">${[[20, 'DN 20 (3/4")'], [25, 'DN 25 (1")'], [32, 'DN 32 (1 1/4")']].map(([v, l]) => `<option value="${v}"${v === ce.diametroMin ? ' selected' : ''}>${l}</option>`).join('')}</select>`)}
+      ${row('Taxa de ocupação máx. (%)', `<input data-k="ocupacaoPct" data-obj="eletrica" type="number" step="1" value="${Math.round(ce.ocupacaoMax * 100)}">`)}
+      ${row('Tomadas baixas', `<select data-k="rotaBaixa" data-obj="eletrica">${[['piso', 'Pelo piso'], ['teto', 'Pelo forro']].map(([v, l]) => `<option value="${v}"${v === ce.rotaBaixa ? ' selected' : ''}>${l}</option>`).join('')}</select>`)}
+      ${pe('trechoMax', 'Trecho máx. entre caixas (m)', 1)}
       ${th('Estrutura')}<tr><td>Tensão admissível do solo (kPa)</td><td><input data-k="sigmaSolo" data-obj="estrutura" type="number" step="10" value="${store.project.estrutura.sigmaSolo}"></td></tr></table>`;
   }
   box.innerHTML = html;
@@ -979,7 +1060,9 @@ function renderProps() {
       store.commit('Propriedade', () => {
         if (k === 'comandosTxt') obj.comandos = [...new Set(v.toLowerCase().split(/[^a-z]+/).filter(Boolean))];
         else if (k === 'tensoes') { const [fn, ff] = v.split('/').map(Number); obj.tensaoFN = fn; obj.tensaoFF = ff; for (const c of store.project.circuitos) c.tensao = (c.polos || 1) === 1 ? fn : ff; }
-        else if (k === 'polos') { obj.polos = v; obj.tensao = v === 1 ? cfg.tensaoFN : cfg.tensaoFF; obj.fase = 'auto'; }
+        else if (k === 'polos') { obj.polos = v; obj.tensao = v === 1 ? cfg.tensaoFN : cfg.tensaoFF; obj.fase = 'auto'; obj.faseCalculada = false; }
+        else if (k === 'fase') { obj.fase = v; obj.faseCalculada = false; }
+        else if (k === 'ocupacaoPct') obj.ocupacaoMax = Math.min(0.53, Math.max(0.2, v / 100));
         else if (k === 'alimentadoPor' && v && criaCiclo(obj, v)) log('Esse quadro já alimenta o escolhido; a hierarquia ficaria circular.', 'err');
         else obj[k] = v;
       });
@@ -1012,6 +1095,22 @@ function acaoProps(acao, sel) {
   if (acao === 'copiar') return store.copy();
   if (acao === 'apagar') return store.remove(sel);
   if (acao === 'unifilar') return diagramaUnifilar(ref);
+  if (acao === 'multifilar') return diagramaMultifilar(ref);
+  if (acao === 'executivo') return quadroExecutivo(ref);
+  if (acao === 'demanda') return relatorioDemanda(ref);
+  if (acao === 'cpTrecho' || acao === 'fixaTrecho' || acao === 'soltaTrecho') {
+    const sg = store.ele.segmentos.find((x) => chaveSeg(x) === sel.chave);
+    if (!sg) return;
+    const pav = sg.para.pav;
+    if (acao === 'cpTrecho') return inserirCaixasPassagem([sg]);
+    const a = sg.de.el.id, b = sg.para.el.id;
+    store.commit(acao === 'fixaTrecho' ? 'Fixar eletroduto' : 'Liberar eletroduto', () => {
+      pav.eletrodutos ||= [];
+      if (acao === 'fixaTrecho') pav.eletrodutos.push({ id: store.uid('M'), a, b });
+      else pav.eletrodutos = pav.eletrodutos.filter((m) => !((m.a === a && m.b === b) || (m.a === b && m.b === a)));
+    });
+    return log(acao === 'fixaTrecho' ? 'Trecho fixado: o traçado automático passa a mantê-lo.' : 'Trecho liberado para o traçado automático.', 'ok');
+  }
   if (acao === 'novoCircuitoQd') return novoCircuito(ref);
   if (acao === 'reservaQd') return novaReserva(ref);
   if (acao === 'distLuz' || acao === 'distTom') return distribuir(acao, ref);
@@ -1092,6 +1191,7 @@ function toggleSpda() {
 function toggleSetting(k) {
   store.settings[k] = !store.settings[k];
   renderStatus();
+  renderRibbon();
   plan.render();
 }
 function toggleVis(d) {
@@ -1265,10 +1365,17 @@ function renderGerenciador() {
       <ul>${filhos.map(nodeQ).join('')}${circs}</ul></li>`;
   };
   const sem = store.results.filter((r) => !r.quadro);
-  box.innerHTML = `<div class="tree"><ul>${raizes.map(nodeQ).join('') || '<li class="empty">Nenhum quadro. Lance um quadro de distribuição (LANÇAMENTO › Quadro).</li>'}
+  box.innerHTML = `<div class="ger-barra">${[['processar', 'Processar', 'dialogoProcessar'], ['renumerar', 'Renumerar circuitos', 'renumerarCircuitos'], ['eliminar', 'Eliminar circuitos não utilizados', 'eliminarNaoUtilizados'], ['unifilar', 'Unifilar geral', 'diagramaUnifilarGeral'], ['demanda', 'Quadro de demanda', 'relatorioDemanda'], ['dimensionar', 'Dimensionar eletrodutos', 'relatorioEletrodutos']].map(([ic, t, f]) => `<button data-ger="${f}" title="${t}">${ICONS[ic]}</button>`).join('')}</div><div class="tree"><ul>${raizes.map(nodeQ).join('') || '<li class="empty">Nenhum quadro. Lance um quadro de distribuição (LANÇAMENTO › Quadro).</li>'}
     ${sem.length ? `<li><div class="node">${ICONS.reserva}<span class="lbl">Sem quadro</span></div><ul>${sem.map((r) => `<li><div class="node" draggable="true" data-circ="${esc(r.circuito.id)}">${sw(r.circuito.id)}<span class="lbl">${esc(r.circuito.nome)}</span></div></li>`).join('')}</ul></li>` : ''}</ul></div>
     <div class="tree-hint">Arraste um quadro sobre outro para definir quem o alimenta; arraste um circuito para outro quadro. Botão direito: mais opções.</div>`;
 }
+// telas estreitas: a roda do mouse rola a faixa de comandos na horizontal
+$('#ribbon').addEventListener('wheel', (e) => {
+  const rb = e.currentTarget;
+  if (rb.scrollWidth <= rb.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  rb.scrollLeft += e.deltaY;
+  e.preventDefault();
+}, { passive: false });
 (function ligarGerenciador() {
   const box = $('#gerenciador');
   let arrasto = null;
@@ -1292,7 +1399,10 @@ function renderGerenciador() {
     }
     renderGerenciador();
   });
+  const ACOES_GER = { dialogoProcessar, renumerarCircuitos, eliminarNaoUtilizados, diagramaUnifilarGeral, relatorioDemanda: () => relatorioDemanda(), relatorioEletrodutos };
   box.addEventListener('click', (e) => {
+    const g = e.target.closest('[data-ger]');
+    if (g) return ACOES_GER[g.dataset.ger]();
     const n = e.target.closest('.node');
     if (!n) return;
     if (n.dataset.circ) {
@@ -1319,7 +1429,10 @@ function renderGerenciador() {
         { id: 'circuito', label: 'Adicionar circuito', run: () => novoCircuito(q) },
         { id: 'reserva', label: 'Adicionar circuito reserva', run: () => novaReserva(q) },
         { id: 'unifilar', label: 'Diagrama unifilar', run: () => diagramaUnifilar(q) },
+        { id: 'multifilar', label: 'Diagrama multifilar', run: () => diagramaMultifilar(q) },
+        { id: 'executivo', label: 'Quadro executivo', run: () => quadroExecutivo(q) },
         { id: 'cargas', label: 'Quadro de cargas', run: () => relatorioCargas(q) },
+        { id: 'demanda', label: 'Quadro de demanda', run: () => relatorioDemanda(q) },
         { id: 'propriedades', label: 'Propriedades', run: () => { store.select({ kind: 'elemento', ref: q }); mostrarPainel('propriedades'); } },
         { id: 'enquadrar', label: 'Localizar', run: () => { const pi = store.project.pavimentos.findIndex((pv) => pv.elementos.includes(q)); setFloor(pi); store.select({ kind: 'elemento', ref: q }); } },
       ];
@@ -1403,10 +1516,10 @@ function relatorioCargas(q) {
   const corpo = lista.map((rq) => { const t = tabelaCargasQuadro(rq); return `<h3>${esc(store.nomeQuadro(rq.quadro))} — ${esc(rq.pav?.nome || '')}</h3>${htmlTabela(t.head, t.rows, t.foot)}${resumoQuadro(rq)}`; }).join('');
   const nota = `Método B1, cobre/PVC 70 °C, temperatura ${store.project.eletrica.temperatura} °C. Comprimento pela rede de eletrodutos; agrupamento pelo maior número de circuitos num mesmo trecho (tab. 42). Queda máxima ${store.project.eletrica.quedaMax}% nos circuitos e ${store.project.eletrica.quedaAlim}% nos alimentadores. Demanda residencial (ilum./TUG por faixa de potência, TUE pelo número de equipamentos). DR obrigatório pelo tipo de ambiente (NBR 5410 5.1.3.2.2).`;
   modal('Quadro de cargas', corpo + `<p style="color:var(--muted)">${nota} Cálculo para pré-dimensionamento; a responsabilidade técnica é do projetista.</p>`, [
+    { label: 'Exportar XLSX', run: () => exportarXlsx(lista.map((rq) => { const t = tabelaCargasQuadro(rq); return { nome: store.nomeQuadro(rq.quadro), cabecalho: true, larguras: [5, 34, 7, 7, ...t.head.slice(4).map(() => 11)], linhas: [t.head, ...t.rows.map((r) => r.map(numero)), t.foot.map(numero)] }; }), 'quadro-de-cargas.xlsx') },
     { label: 'Exportar CSV', run: () => { const t = tabelaCargasQuadro(lista[0]); host.exportFile(csv(t.head, t.rows), 'quadro-de-cargas.csv', 'csv', 'CSV').then((p) => p && log(`Exportado: ${p}`, 'ok')); } },
     { label: 'Salvar PDF', run: () => salvarPdf('Quadro de cargas', corpo + `<p class="sub">${nota}</p>`, 'quadro-de-cargas.pdf') },
   ]);
-  log(`Processado: ${store.results.length} circuito(s) em ${qds.length} quadro(s).`, 'ok');
 }
 function relatorioLuminotecnicoGeral() {
   const amb = store.project.pavimentos.flatMap((pv) => pv.ambientes.filter((a) => a.luminotecnico).map((a) => ({ pv, a })));
@@ -1415,21 +1528,383 @@ function relatorioLuminotecnicoGeral() {
   modal('Relatório luminotécnico', corpo, [{ label: 'Salvar PDF', run: () => salvarPdf('Relatório luminotécnico (método dos lúmens)', corpo, 'luminotecnico.pdf') }]);
 }
 function memorialDescritivo() {
-  const p = store.project, cfg = p.eletrica;
+  const p = store.project, cfg = p.eletrica, ce = store.ele.cfg;
   const qds = store.ele.quadros;
-  const total = qds.filter((q) => !q.quadro.alimentadoPor).reduce((a, q) => a + q.demanda, 0);
+  const total = qds.filter((q) => !q.alimentador?.pai).reduce((a, q) => a + q.demanda, 0);
   const cont = (t) => p.pavimentos.reduce((a, pv) => a + pv.elementos.filter((e) => e.tipo === t).length, 0);
+  const pavs = htmlTabela(['Pavimento', 'Cota (m)', 'Pé-direito (m)', 'Pontos elétricos'], p.pavimentos.map((pv) => [pv.nome, fmt(pv.cota), fmt(pv.peDireito), pv.elementos.filter((e) => TIPOS[e.tipo]?.disc === 'ele').length]));
+  const dim = qds.filter((q) => q.quadro.tipo === 'qd').map((rq) => { const t = tabelaCargasQuadro(rq); return `<h3>${esc(store.nomeQuadro(rq.quadro))} — ${esc(rq.pav?.nome || '')}</h3>${htmlTabela(t.head, t.rows, t.foot)}`; }).join('');
+  const mat = listaMateriais(p, store.ele);
   const html = `
-    <h2>1. Objetivo</h2><p>Este memorial descreve as instalações elétricas de baixa tensão de <b>${esc(p.nome)}</b>, com ${p.pavimentos.length} pavimento(s), conforme a ABNT NBR 5410.</p>
-    <h2>2. Fornecimento</h2><p>Tensões de ${cfg.tensaoFN}/${cfg.tensaoFF} V. Demanda total estimada de <b>${fmt(total / 1000, 2)} kVA</b>. ${qds.filter((q) => q.quadro.tipo !== 'qd').map((q) => `${esc(store.nomeQuadro(q.quadro))}: ${q.esquema}, disjuntor ${q.disjuntorGeral ?? '-'} A.`).join(' ')}</p>
-    <h2>3. Quadros de distribuição</h2>${qds.filter((q) => q.quadro.tipo === 'qd').map((q) => `<p><b>${esc(store.nomeQuadro(q.quadro))}</b> (${esc(q.pav?.nome || '')}): esquema ${q.esquema}, ${q.circuitos.length} circuitos (${q.reservas} reservas), disjuntor geral ${q.disjuntorGeral ?? '-'} A, alimentador ${q.alimentador?.secao ? `${q.alimentador.condutores} ${fmtSec(q.alimentador.secao)} mm²` : '-'}, ${q.drGrupos.length} interruptor(es) DR de 30 mA, ${q.dps ? 'DPS classe II' : 'sem DPS'}, caixa de ${q.tamanho} módulos DIN.</p>`).join('')}
-    <h2>4. Critérios de dimensionamento</h2><p>Condutores de cobre com isolação PVC 70 °C (750 V nos circuitos terminais), método de instalação B1 (eletroduto embutido), temperatura ambiente de ${cfg.temperatura} °C. Seções mínimas de 1,5 mm² para iluminação e 2,5 mm² para força. A seção atende à capacidade de condução com os fatores de agrupamento e temperatura, à coordenação Ib ≤ In ≤ Iz dos disjuntores (curva C) e à queda de tensão máxima de ${cfg.quedaMax}% nos circuitos terminais e ${cfg.quedaAlim}% nos alimentadores. Eletrodutos de PVC dimensionados para ocupação máxima de 40%.</p>
+    <h2>1. Identificação</h2>${htmlTabela(['Item', 'Valor'], [['Projeto', p.nome], ['Proprietário', p.proprietario || '—'], ['Endereço', p.endereco || '—'], ['Responsável técnico', `${p.autor || '—'}${p.registro ? ` · ${p.registro}` : ''}`], ['Data', new Date().toLocaleDateString('pt-BR')]])}
+    <h2>2. Descrição do projeto</h2><p>O projeto consiste na instalação elétrica de baixa tensão de <b>${esc(p.nome)}</b>, com ${p.pavimentos.length} pavimento(s), conforme descrito a seguir.</p>${pavs}
+    <h2>3. Objetivo do memorial</h2><p>Apresentar as especificações dos materiais, os critérios de cálculo, o projeto elétrico e os principais resultados do dimensionamento.</p>
+    <h2>4. Normas relacionadas</h2><p>ABNT NBR 5410:2004 — Instalações elétricas de baixa tensão; ABNT NBR 5419 — Proteção contra descargas atmosféricas; ABNT NBR 14136 — Plugues e tomadas; ABNT NBR NM 247 — Cabos isolados com PVC; ABNT NBR IEC 60898 — Disjuntores; ABNT NBR 15465 — Sistemas de eletrodutos plásticos; normas da concessionária local.</p>
+    <h2>5. Fornecimento</h2><p>Tensões de ${cfg.tensaoFN}/${cfg.tensaoFF} V. Demanda total estimada de <b>${fmt(total / 1000, 2)} kVA</b>. ${qds.filter((q) => q.quadro.tipo !== 'qd').map((q) => `${esc(store.nomeQuadro(q.quadro))}: ${q.esquema}, disjuntor ${q.disjuntorGeral ?? '-'} A.`).join(' ')}</p>
+    <h2>6. Quadros de distribuição</h2>${qds.filter((q) => q.quadro.tipo === 'qd').map((q) => `<p><b>${esc(store.nomeQuadro(q.quadro))}</b> (${esc(q.pav?.nome || '')}): esquema ${q.esquema}, ${q.circuitos.length} circuitos (${q.reservas} reservas), disjuntor geral ${q.disjuntorGeral ?? '-'} A, alimentador ${q.alimentador?.secao ? `${q.alimentador.condutores} ${fmtSec(q.alimentador.secao)} mm²` : '-'}, ${q.drGrupos.length} interruptor(es) DR de 30 mA, ${q.dps ? 'DPS classe II' : 'sem DPS'}, caixa de ${q.tamanho} módulos DIN.</p>`).join('')}
+    <h2>7. Critérios de dimensionamento</h2><p>Condutores de cobre com isolação PVC 70 °C (750 V nos circuitos terminais), método de instalação B1 (eletroduto embutido), temperatura ambiente de ${cfg.temperatura} °C. Seções mínimas de 1,5 mm² para iluminação e 2,5 mm² para força. A seção atende à capacidade de condução com os fatores de agrupamento e temperatura, à coordenação Ib ≤ In ≤ Iz dos disjuntores (curva C) e à queda de tensão máxima de ${cfg.quedaMax}% nos circuitos terminais e ${cfg.quedaAlim}% nos alimentadores.</p>
     <p>Previsão de cargas pelos mínimos da NBR 5410 (9.5.2): iluminação de 100 VA para os primeiros 6 m² e 60 VA a cada 4 m² inteiros; tomadas de uso geral conforme o perímetro e o uso de cada ambiente; tomadas de uso específico com circuito exclusivo.</p>
-    <h2>5. Proteção</h2><p>Proteção contra sobrecorrentes por disjuntores termomagnéticos. Proteção diferencial-residual de alta sensibilidade (30 mA) nos circuitos que atendem banheiros, cozinhas, áreas de serviço, áreas externas e garagens (NBR 5410 5.1.3.2.2). Condutor de proteção (PE) em todos os circuitos. Proteção contra surtos por DPS no quadro de distribuição.</p>
-    <h2>6. Quantitativos principais</h2><p>${cont('luz') + cont('arandela')} pontos de luz, ${cont('tug')} tomadas de uso geral, ${cont('tue')} tomadas de uso específico, ${cont('interruptor') + cont('paralelo') + cont('intermediario') + cont('dimmer')} interruptores, ${store.ele.segmentos.reduce((a, s) => a + s.comp, 0).toFixed(0)} m de eletrodutos.</p>
-    <h2>7. Observações</h2><p>Antes da execução, conferir as cotas de pontos com o projeto de arquitetura e o padrão de entrada com as exigências da concessionária local.</p>`;
+    <h2>8. Eletrodutos</h2><p>${esc(ce.material)}, diâmetro mínimo DN ${ce.diametroMin}, taxa de ocupação máxima de ${fmt(ce.ocupacaoMax * 100, 0)}%. Iluminação pelo forro e tomadas baixas ${ce.rotaBaixa === 'piso' ? 'pelo piso' : 'pelo forro'}; circuitos de uso específico em eletroduto exclusivo. Trechos contínuos de no máximo ${ce.trechoMax} m entre caixas, reduzidos de 3 m a cada curva de 90°, com no máximo 3 curvas (NBR 5410 6.2.11.1.6).</p>
+    <h2>9. Proteção</h2><p>Proteção contra sobrecorrentes por disjuntores termomagnéticos. Proteção diferencial-residual de alta sensibilidade (30 mA) nos circuitos que atendem banheiros, cozinhas, áreas de serviço, áreas externas e garagens (NBR 5410 5.1.3.2.2). Condutor de proteção (PE) em todos os circuitos. Proteção contra surtos por DPS no quadro de distribuição.</p>
+    <h2>10. Relatório de dimensionamento</h2>${dim}
+    <h2>11. Quantitativos principais</h2><p>${cont('luz') + cont('arandela')} pontos de luz, ${cont('tug')} tomadas de uso geral, ${cont('tue')} tomadas de uso específico, ${cont('interruptor') + cont('paralelo') + cont('intermediario') + cont('dimmer')} interruptores, ${cont('cp')} caixas de passagem, ${store.ele.segmentos.reduce((a, s) => a + s.comp, 0).toFixed(0)} m de eletrodutos.</p>
+    <h2>12. Lista de materiais (elétrico)</h2>${htmlTabela(['Descrição', 'Unidade', 'Quantidade'], mat.map((m) => [m.desc, m.un, fmt(m.qtd, m.un === 'm' ? 1 : 0)]))}
+    <h2>13. Observações</h2><p>Antes da execução, conferir as cotas de pontos com o projeto de arquitetura e o padrão de entrada com as exigências da concessionária local. Cálculo para pré-dimensionamento; a responsabilidade técnica é do projetista.</p>`;
   modal('Memorial descritivo — instalações elétricas', html, [{ label: 'Salvar PDF', run: () => salvarPdf('Memorial descritivo — instalações elétricas', html, 'memorial-eletrico.pdf') }]);
 }
+
+// ---------------------------------------------------------------- elétrico: processar, gerenciador e eletrodutos
+const ORDEM_TIPO = { ILUM: 0, TUG: 1, TUE: 2, RESERVA: 3 };
+function quadrosEmOrdem() { return store.project.pavimentos.flatMap((pv) => pv.elementos.filter((e) => e.tipo === 'qd')); }
+
+// fases: circuitos em automático (ou já balanceados antes) são redistribuídos e as fases ficam gravadas no circuito
+function balancearFases(projeto) {
+  const livres = projeto.circuitos.filter((c) => !c.fase || c.fase === 'auto' || c.faseCalculada);
+  for (const c of livres) c.fase = 'auto';
+  const calc = calcularEletrica(projeto);
+  for (const c of livres) {
+    const r = calc.circuitos.find((x) => x.circuito === c);
+    if (r?.fases.length) { c.fase = r.fases.join(''); c.faseCalculada = true; }
+  }
+  return livres.length;
+}
+
+// numeração por quadro: iluminação, TUG, TUE e reservas por último
+function renumerar(projeto) {
+  const qds = quadrosEmOrdem();
+  const quadroDe = (c) => store.ele.circuitos.find((r) => r.circuito === c)?.quadro || null;
+  const grupos = new Map();
+  for (const c of projeto.circuitos) {
+    const q = quadroDe(c);
+    if (!grupos.has(q)) grupos.set(q, []);
+    grupos.get(q).push(c);
+  }
+  let n = 0;
+  const ordemQ = [...grupos.keys()].sort((a, b) => (a ? qds.indexOf(a) : 1e9) - (b ? qds.indexOf(b) : 1e9));
+  for (const q of ordemQ) {
+    const lista = grupos.get(q).sort((a, b) => (ORDEM_TIPO[a.tipo] ?? 9) - (ORDEM_TIPO[b.tipo] ?? 9) || a.numero - b.numero);
+    let k = 0;
+    for (const c of lista) {
+      k++;
+      if (c.numero !== k) n++;
+      c.nome = c.nome.replace(/^C\d+\s*/, `C${k} `);
+      c.numero = k;
+    }
+  }
+  projeto.circuitos.sort((a, b) => {
+    const qa = quadroDe(a), qb = quadroDe(b);
+    return (qa ? qds.indexOf(qa) : 1e9) - (qb ? qds.indexOf(qb) : 1e9) || a.numero - b.numero;
+  });
+  return n;
+}
+function renumerarCircuitos() {
+  let n = 0;
+  store.commit('Renumerar circuitos', () => { n = renumerar(store.project); });
+  syncCircuitSelect(); renderGerenciador();
+  log(n ? `Circuitos renumerados por quadro (iluminação, TUG, TUE e reservas): ${n} número(s) alterado(s).` : 'A numeração já estava em ordem.', 'ok');
+}
+function eliminarNaoUtilizados() {
+  const usados = new Set(store.project.pavimentos.flatMap((pv) => pv.elementos.map((e) => e.circuitoId)).filter(Boolean));
+  const sobra = store.project.circuitos.filter((c) => c.tipo !== 'RESERVA' && !usados.has(c.id));
+  if (!sobra.length) return log('Não há circuitos sem pontos.', 'ok');
+  if (!confirm(`Excluir ${sobra.length} circuito(s) sem pontos?\n${sobra.map((c) => c.nome).join('\n')}`)) return;
+  store.commit('Eliminar circuitos não utilizados', () => { store.project.circuitos = store.project.circuitos.filter((c) => !sobra.includes(c)); });
+  if (!store.activeCircuit) store.activeCircuitId = store.project.circuitos[0]?.id || null;
+  syncCircuitSelect(); renderGerenciador();
+  log(`${sobra.length} circuito(s) não utilizado(s) excluído(s).`, 'ok');
+}
+
+// caixas de passagem nos trechos acima do comprimento máximo (repetido até resolver ou não haver mais o que dividir)
+function inserirCaixasPassagem(segs, silencioso) {
+  let total = 0;
+  const perto = (pav, x, y) => pav.elementos.some((e) => e.tipo === 'cp' && Math.hypot(e.x - x, e.y - y) < 0.3);
+  store.snapshot();
+  for (let passo = 0; passo < 6; passo++) {
+    const alvo = (passo === 0 && segs ? segs : store.ele.segmentos).filter((s) => s.excede && s.de.pav === s.para.pav);
+    let novas = 0;
+    for (const s of alvo) {
+      const pav = s.para.pav;
+      const L = Math.abs(s.para.x - s.de.x) > 0.05 && Math.abs(s.para.y - s.de.y) > 0.05;
+      // na quina do trajeto em L (onde fica a curva) ou no meio do trecho reto
+      let x = L ? s.para.x : (s.de.x + s.para.x) / 2, y = L ? s.de.y : (s.de.y + s.para.y) / 2;
+      if (perto(pav, x, y)) { x = (s.de.x + x) / 2; y = (s.de.y + y) / 2; }
+      if (perto(pav, x, y)) continue;
+      pav.elementos.push({ id: store.uid('E'), tipo: 'cp', x, y, altura: s.nivel === 'piso' ? 0.3 : Math.round((pav.peDireito - 0.1) * 100) / 100, descricao: '', circuitoId: null });
+      novas++;
+    }
+    if (!novas) break;
+    total += novas;
+    store.calc();
+  }
+  if (!total) store.undo.pop();
+  store.changed(true);
+  const rest = store.ele.segmentos.filter((s) => s.excede).length;
+  if (!silencioso || total) log(total ? `${total} caixa(s) de passagem inserida(s).${rest ? ` Ainda há ${rest} trecho(s) acima do máximo: confira o traçado.` : ' Todos os trechos dentro do comprimento máximo.'}` : rest ? 'Não foi possível dividir os trechos longos automaticamente.' : 'Nenhum trecho acima do comprimento máximo entre caixas.', total ? 'ok' : '');
+  return total;
+}
+
+function dialogoProcessar() {
+  const ck = (id, txt, on = true) => `<label class="chk"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${txt}</label>`;
+  modal('Processar', `<div class="processar">
+    <p class="sub">O traçado dos eletrodutos e o dimensionamento são recalculados a cada alteração. O processamento grava os resultados que dependem de uma decisão: fases, caixas e numeração.</p>
+    <h4>Opções</h4>
+    ${ck('pr-fiacao', 'Passar fiação: eletrodutos, condutores e retornos em todos os trechos')}
+    ${ck('pr-fases', 'Balancear fases: menor diferença de corrente entre as fases (fases fixadas à mão são mantidas)')}
+    ${ck('pr-dim', 'Dimensionar circuitos: seção, disjuntor, DR, queda de tensão e alimentadores')}
+    ${ck('pr-cp', 'Inserir caixas de passagem nos trechos acima do comprimento máximo (NBR 5410 6.2.11.1.6)', store.ele.segmentos.some((s) => s.excede))}
+    ${ck('pr-ren', 'Renumerar circuitos por quadro (iluminação, TUG, TUE, reservas)', false)}
+    ${ck('pr-salvar', 'Salvar o projeto após o processamento', false)}</div>`, [{
+    label: 'Processar', primary: true, run: async () => {
+      const o = Object.fromEntries(['fases', 'cp', 'ren', 'salvar', 'dim'].map((k) => [k, $(`#pr-${k}`).checked]));
+      closeModal();
+      let fases = 0, ren = 0, cps = 0;
+      if (o.fases || o.ren) store.commit('Processar', () => { if (o.fases) fases = balancearFases(store.project); if (o.ren) ren = renumerar(store.project); });
+      if (o.cp) cps = inserirCaixasPassagem(null, true);
+      syncCircuitSelect(); renderGerenciador();
+      const e = store.ele;
+      const erros = e.avisos.filter((a) => a.nivel === 'erro').length, avisos = e.avisos.length - erros;
+      const linhas = e.quadros.filter((q) => q.quadro.tipo === 'qd').map((q) => [store.nomeQuadro(q.quadro), q.circuitos.length, q.fasesQ.map((f) => `${f} ${fmt(q.fases[f], 0)}`).join(' · '), `${fmt(q.deseq * 100, 1)} %`, q.disjuntorGeral ? `${q.fasesQ.length}P ${q.disjuntorGeral} A` : '—']);
+      modal('Processamento concluído', `<ul class="checks">
+        <li><span class="tag ok">OK</span>${e.segmentos.length} trechos de eletroduto, ${fmt(e.segmentos.reduce((a, s) => a + s.comp, 0), 0)} m; ${e.segmentos.reduce((a, s) => a + s.condutores.length, 0)} condutores passados.</li>
+        ${o.fases ? `<li><span class="tag ok">OK</span>${fases} circuito(s) com fases balanceadas e gravadas.</li>` : ''}
+        ${o.cp ? `<li><span class="tag ${cps ? 'ok' : 'ok'}">OK</span>${cps} caixa(s) de passagem inserida(s).</li>` : ''}
+        ${o.ren ? `<li><span class="tag ok">OK</span>${ren} número(s) de circuito alterado(s).</li>` : ''}
+        <li><span class="tag ${erros ? 'erro' : avisos ? 'aviso' : 'ok'}">${erros ? 'Erro' : avisos ? 'Aviso' : 'OK'}</span>${erros} erro(s) e ${avisos} aviso(s). Os triângulos na planta mostram onde (passe o mouse sobre eles).</li></ul>
+        ${htmlTabela(['Quadro', 'Circuitos', 'Carga por fase (VA)', 'Desequilíbrio', 'Disjuntor geral'], linhas)}`, [
+        { label: 'Quadro de cargas', run: () => relatorioCargas() },
+        { label: 'Verificações', run: () => relatorioVerificacoes() },
+      ]);
+      log(`Processado: ${store.results.length} circuito(s), ${e.segmentos.length} trechos de eletroduto, ${erros} erro(s), ${avisos} aviso(s).`, erros ? 'err' : 'ok');
+      if (o.salvar) await salvar();
+    },
+  }]);
+}
+
+function tabelaEletrodutos() {
+  const nome = (n) => (TIPOS[n.el.tipo]?.quadro ? store.nomeQuadro(n.el) : TIPOS[n.el.tipo]?.sigla || n.el.tipo);
+  const head = ['Pavimento', 'Trecho', 'Passa', 'DN', 'Condutores', 'Área cond. (mm²)', 'Área útil (mm²)', 'Ocupação', 'L (m)', 'Curvas', 'Máx. (m)', 'Situação'];
+  const rows = store.ele.segmentos.map((s) => [
+    s.de.pav === s.para.pav ? s.para.pav.nome : `${s.de.pav.nome} → ${s.para.pav.nome}`, `${nome(s.de)} → ${nome(s.para)}`, s.de.pav !== s.para.pav ? 'prumada' : s.nivel === 'piso' ? 'piso' : 'forro',
+    `DN ${s.dn}`, `${s.cont.F}F ${s.cont.N}N ${s.cont.T}T ${s.cont.R}R`, fmt(s.areaOcupada, 1), fmt(s.areaUtil, 1), `${fmt(s.ocupacao * 100, 0)} %`,
+    fmt(s.comp, 1), s.curvas, fmt(Math.max(0, s.maxComp), 0), s.excede ? 'Aviso' : 'OK',
+  ]);
+  return { head, rows };
+}
+function relatorioEletrodutos() {
+  if (!store.ele.segmentos.length) return log('Não há eletrodutos: lance um quadro e pontos com circuito.', 'warn');
+  const { head, rows } = tabelaEletrodutos();
+  const porDn = new Map();
+  for (const s of store.ele.segmentos) porDn.set(s.dn, (porDn.get(s.dn) || 0) + s.comp);
+  const resumo = htmlTabela(['Diâmetro', 'Comprimento (m)'], [...porDn].sort((a, b) => a[0] - b[0]).map(([dn, L]) => [`DN ${dn}`, fmt(L * 1.05, 1)]));
+  const ce = store.ele.cfg;
+  const corpo = `${htmlTabela(head, rows)}<h3>Resumo por diâmetro (com 5% de perdas)</h3>${resumo}`;
+  const txt = `${ce.material}; diâmetro mínimo DN ${ce.diametroMin}; taxa de ocupação máxima ${fmt(ce.ocupacaoMax * 100, 0)}% (53% com um condutor, 31% com dois); trecho contínuo máximo de ${ce.trechoMax} m entre caixas, menos 3 m por curva de 90°, no máximo 3 curvas (NBR 5410 6.2.11.1.6). Tomadas baixas ${ce.rotaBaixa === 'piso' ? 'pelo piso' : 'pelo forro'}.`;
+  modal('Dimensionamento de eletrodutos', corpo + nota(txt), [
+    ...(store.ele.segmentos.some((s) => s.excede) ? [{ label: 'Inserir caixas de passagem', run: () => { closeModal(); inserirCaixasPassagem(); } }] : []),
+    btnCsv(head, rows, 'eletrodutos.csv'),
+    { label: 'Salvar PDF', run: () => salvarPdf('Dimensionamento de eletrodutos', corpo + `<p class="sub">${txt}</p>`, 'eletrodutos.pdf') },
+  ]);
+}
+
+function escolherQuadro(q, tipos = ['qd']) {
+  const qs = store.ele.quadros.filter((x) => tipos.includes(x.quadro.tipo));
+  const sel = store.selection?.kind === 'elemento' ? qs.find((x) => x.quadro === store.selection.ref) : null;
+  return { qs, rq: (q && qs.find((x) => x.quadro === q)) || sel || qs[0] };
+}
+// janela de diagrama em SVG com escolha do quadro
+function dialogoDiagrama(titulo, gerar, q, prefixo, tipos) {
+  let { qs, rq } = escolherQuadro(q, tipos);
+  if (!rq) return log('Não há quadro de distribuição.', 'warn');
+  const desenha = () => { $('#dg-svg').innerHTML = gerar(rq); };
+  const nomeArq = () => `${prefixo}-${store.nomeQuadro(rq.quadro)}`;
+  modal(titulo, `${qs.length > 1 ? `<p>Quadro: <select id="dg-q">${qs.map((x, i) => `<option value="${i}"${x === rq ? ' selected' : ''}>${esc(store.nomeQuadro(x.quadro))} (${esc(x.pav?.nome || '')})</option>`).join('')}</select></p>` : ''}<div id="dg-svg" style="overflow:auto"></div>`, [
+    { label: 'Salvar SVG', run: () => host.exportFile(gerar(rq), `${nomeArq()}.svg`, 'svg', 'Imagem SVG').then((p) => p && log(`Exportado: ${p}`, 'ok')) },
+    { label: 'Salvar PDF', run: () => salvarPdf(`${titulo} — ${store.nomeQuadro(rq.quadro)}`, gerar(rq), `${nomeArq()}.pdf`) },
+  ]);
+  $('#dg-q')?.addEventListener('change', (e) => { rq = qs[Number(e.target.value)]; desenha(); });
+  desenha();
+}
+const diagramaMultifilar = (q) => dialogoDiagrama('Diagrama multifilar', (rq) => svgMultifilar(store.project, rq), q, 'multifilar');
+const quadroExecutivo = (q) => dialogoDiagrama('Quadro executivo', (rq) => svgQuadroExecutivo(store.project, rq), q, 'quadro-executivo');
+function diagramaUnifilarGeral() {
+  if (!store.ele.quadros.length) return log('Não há quadros no projeto.', 'warn');
+  const svg = svgUnifilarGeral(store.project, store.ele);
+  modal('Diagrama unifilar geral', `<div style="overflow:auto">${svg}</div>`, [
+    { label: 'Salvar SVG', run: () => host.exportFile(svg, 'unifilar-geral.svg', 'svg', 'Imagem SVG').then((p) => p && log(`Exportado: ${p}`, 'ok')) },
+    { label: 'Salvar PDF', run: () => salvarPdf('Diagrama unifilar geral', svg, 'unifilar-geral.pdf') },
+  ]);
+}
+function htmlDemanda(rq) {
+  const d = quadroDemanda(store.project, rq);
+  return `${htmlTabela(d.head, d.rows, d.foot)}${htmlTabela(['Item', 'Valor'], d.resumo)}`;
+}
+function relatorioDemanda(q) {
+  const lista = q ? store.ele.quadros.filter((x) => x.quadro === q) : store.ele.quadros.filter((x) => x.circuitos.length || x.filhos.length);
+  if (!lista.length) return log('Não há quadros com carga.', 'warn');
+  const corpo = lista.map((rq) => `<h3>${esc(store.nomeQuadro(rq.quadro))} — ${esc(TIPOS[rq.quadro.tipo].nome)}</h3>${htmlDemanda(rq)}`).join('');
+  const txt = 'Demanda residencial: iluminação, TUG e reservas pelo fator da faixa de potência instalada; TUE pelo número de equipamentos; quadros a jusante pela demanda já calculada. Corrente de projeto pela fase mais carregada.';
+  modal('Quadro de demanda', corpo + nota(txt), [{ label: 'Salvar PDF', run: () => salvarPdf('Quadro de demanda', corpo + `<p class="sub">${txt}</p>`, 'quadro-de-demanda.pdf') }]);
+}
+
+// legenda de fiação: indicações numéricas dos eletrodutos de cada pavimento
+function htmlLegendaFiacao(pav) {
+  const t = legendaFiacao(store.project, store.ele, pav, indicacoesPavimento(store.ele, pav));
+  return t.rows.length ? htmlTabela(t.head, t.rows) : '';
+}
+function relatorioLegendaFiacao() {
+  const corpo = store.project.pavimentos.map((pv) => { const h = htmlLegendaFiacao(pv); return h ? `<h3>${esc(pv.nome)}</h3>${h}` : ''; }).join('');
+  if (!corpo) return log('Não há eletrodutos para a legenda.', 'warn');
+  modal('Legenda de fiação', corpo + nota('Os números correspondem às indicações dos eletrodutos na planta (OPERAÇÕES › Indicação numérica).'), [
+    { label: store.settings.indicacaoNumerica ? 'Voltar às indicações por extenso' : 'Mostrar indicações numéricas na planta', run: () => { toggleSetting('indicacaoNumerica'); closeModal(); } },
+    { label: 'Salvar PDF', run: () => salvarPdf('Legenda de fiação', corpo, 'legenda-de-fiacao.pdf') },
+  ]);
+}
+
+// legenda de símbolos: os símbolos usados, desenhados pelo mesmo código da planta
+const _iconeSimb = new Map();
+function iconeSimbolo(tipo) {
+  if (_iconeSimb.has(tipo)) return _iconeSimb.get(tipo);
+  const cv = document.createElement('canvas');
+  cv.width = 96; cv.height = 64;
+  const fake = Object.assign(Object.create(Plan2D.prototype), { ctx: cv.getContext('2d'), scale: 60, store });
+  fake.ctx.setTransform(2, 0, 0, 2, 0, 0);
+  const t = TIPOS[tipo];
+  fake.drawSymbol(tipo, { x: 24, y: 17 }, t.disc === 'hid' ? '#0f6f80' : t.disc === 'est' ? '#6b4fa0' : '#34404c', { b: t.b || 20, h: t.h || 30 });
+  const url = cv.toDataURL('image/png');
+  _iconeSimb.set(tipo, url);
+  return url;
+}
+function iconeLinha(estilo) {
+  const cv = document.createElement('canvas');
+  cv.width = 96; cv.height = 64;
+  const c = cv.getContext('2d');
+  c.setTransform(2, 0, 0, 2, 0, 0);
+  c.lineWidth = 1.6;
+  c.strokeStyle = estilo === 'alim' ? '#b05a00' : '#4a5562';
+  if (estilo === 'piso') c.setLineDash([7, 4]);
+  if (estilo === 'alim') { c.setLineDash([10, 4]); c.lineWidth = 2.4; }
+  c.beginPath(); c.moveTo(4, 17); c.lineTo(44, 17); c.stroke();
+  if (estilo === 'fiacao') {
+    c.setLineDash([]);
+    const marca = (x, cor, tipo) => { c.strokeStyle = cor; c.beginPath(); c.moveTo(x - 4, 21); c.lineTo(x + 4, 13); if (tipo === 'N') { c.moveTo(x + 1, 13); c.lineTo(x + 4, 13); } if (tipo === 'T') { c.moveTo(x - 2, 23); c.lineTo(x + 6, 15); } if (tipo === 'R') { c.moveTo(x + 4, 13); c.lineTo(x + 6, 16); } c.stroke(); };
+    marca(14, '#2b2f33', 'F'); marca(21, '#1d6fd6', 'N'); marca(28, '#1f9d55', 'T'); marca(35, '#c98a00', 'R');
+  }
+  return cv.toDataURL('image/png');
+}
+function linhasSimbolos(pavs, soEle) {
+  const cont = new Map();
+  for (const pv of pavs) for (const e of pv.elementos) { const t = TIPOS[e.tipo]; if (t && (t.disc === 'ele' || (t.disc === 'hid' && !soEle))) cont.set(e.tipo, (cont.get(e.tipo) || 0) + 1); }
+  const ordem = Object.keys(TIPOS);
+  const rows = [...cont].sort((a, b) => ordem.indexOf(a[0]) - ordem.indexOf(b[0])).map(([tipo, n]) => {
+    const t = TIPOS[tipo];
+    return { img: iconeSimbolo(tipo), desc: `${t.nome}${t.disc === 'ele' && !t.quadro && t.altura != null ? ` — h = ${fmt(t.altura)} m` : ''}`, n };
+  });
+  if (pavs.some((pv) => store.ele.segmentos.some((s) => s.para.pav === pv))) {
+    rows.push({ img: iconeLinha('forro'), desc: 'Eletroduto embutido no forro/laje', n: '' }, { img: iconeLinha('piso'), desc: 'Eletroduto embutido no piso', n: '' },
+      { img: iconeLinha('fiacao'), desc: 'Condutores: fase, neutro, proteção (terra), retorno', n: '' });
+    if (store.ele.alimentadores.length) rows.push({ img: iconeLinha('alim'), desc: 'Alimentador entre quadros', n: '' });
+  }
+  return rows;
+}
+function htmlLegendaSimbolos(pavs, compacta) {
+  const rows = linhasSimbolos(pavs, compacta);
+  if (!rows.length) return '';
+  return `<table class="report simbolos"><thead><tr><th>Símbolo</th><th>Descrição</th>${compacta ? '' : '<th>Qtd.</th>'}</tr></thead><tbody>${rows.map((r) => `<tr><td style="text-align:center"><img src="${r.img}" style="width:48px;height:32px"></td><td class="l">${esc(r.desc)}</td>${compacta ? '' : `<td>${r.n}</td>`}</tr>`).join('')}</tbody></table>`;
+}
+function relatorioSimbolos() {
+  const corpo = htmlLegendaSimbolos(store.project.pavimentos);
+  if (!corpo) return log('Não há símbolos lançados.', 'warn');
+  modal('Legenda de símbolos', corpo, [{ label: 'Salvar PDF', run: () => salvarPdf('Legenda de símbolos', corpo, 'legenda-de-simbolos.pdf') }]);
+}
+
+// ---------------------------------------------------------------- entrega: pranchas, IFC
+function conteudoPranchas(o) {
+  const pranchas = [];
+  const temEle = (pv) => pv.elementos.some((e) => TIPOS[e.tipo]?.disc === 'ele');
+  const notas = (pv) => `<div style="font-size:2.6mm;line-height:1.35"><b>Notas</b><br>1. Cotas em metros; alturas de instalação conforme a legenda.<br>2. Eletrodutos ${store.ele.cfg.material.toLowerCase()}, DN mínimo ${store.ele.cfg.diametroMin}; tracejado: pelo piso.<br>3. Circuitos e seções conforme o quadro de cargas.<br>4. Conferir com o projeto de arquitetura antes da execução.</div>`;
+  const tiposPlanta = o.luzForca ? [['iluminacao', 'Planta de iluminação'], ['tomadas', 'Planta de tomadas']] : [['completa', 'Planta elétrica']];
+  for (const pv of store.project.pavimentos.filter(temEle)) {
+    for (const [planta, nomeP] of tiposPlanta) {
+      const img = renderizarPlanta(store, pv, { escala: o.escala, planta, numerica: o.numerica, fundo: o.fundo });
+      const conteudo = [{ tipo: 'img', ...img, hmm: img.hmm + 5, legenda: `${nomeP} — ${pv.nome} — escala 1:${o.escala}` }];
+      if (o.simbolos) conteudo.push({ tipo: 'html', html: `<div style="font-size:3mm;font-weight:700;margin-bottom:1mm">Legenda</div>${htmlLegendaSimbolos([pv], true)}`, wmm: 78, hmm: 12 + linhasSimbolos([pv], true).length * 10.6 });
+      if (o.numerica) { const h = htmlLegendaFiacao(pv); if (h) conteudo.push({ tipo: 'html', html: `<div style="font-size:3mm;font-weight:700;margin-bottom:1mm">Legenda de fiação</div>${h}`, wmm: 175 }); }
+      conteudo.push({ tipo: 'html', html: notas(pv), wmm: 95, hmm: 26 });
+      pranchas.push({ titulo: `${nomeP} — ${pv.nome}`, escala: o.escala, conteudo });
+    }
+  }
+  const diag = [];
+  const qds = store.ele.quadros.filter((q) => q.quadro.tipo === 'qd');
+  if (o.geral && store.ele.quadros.length > 1) diag.push({ tipo: 'svg', svg: svgUnifilarGeral(store.project, store.ele), legenda: 'Diagrama unifilar geral' });
+  for (const rq of qds) {
+    const n = store.nomeQuadro(rq.quadro);
+    if (o.unifilar) diag.push({ tipo: 'svg', svg: svgUnifilar(store.project, rq), legenda: `Diagrama unifilar — ${n}` });
+    if (o.cargas) { const t = tabelaCargasQuadro(rq); diag.push({ tipo: 'html', html: `<div style="font-size:3mm;font-weight:700;margin-bottom:1mm">Quadro de cargas — ${esc(n)}</div>${htmlTabela(t.head, t.rows, t.foot)}`, wmm: 265 }); }
+    if (o.executivo) diag.push({ tipo: 'svg', svg: svgQuadroExecutivo(store.project, rq), legenda: `Quadro executivo — ${n}` });
+    if (o.multifilar) diag.push({ tipo: 'svg', svg: svgMultifilar(store.project, rq), legenda: `Diagrama multifilar — ${n}` });
+    if (o.demanda) diag.push({ tipo: 'html', html: `<div style="font-size:3mm;font-weight:700;margin-bottom:1mm">Quadro de demanda — ${esc(n)}</div>${htmlDemanda(rq)}`, wmm: 150 });
+  }
+  if (diag.length) pranchas.push({ titulo: 'Diagramas e quadros', escala: null, conteudo: diag });
+  return pranchas;
+}
+function infoSelo() {
+  const p = store.project;
+  return { projeto: p.nome, proprietario: p.proprietario, endereco: p.endereco, autor: p.autor, registro: p.registro, data: new Date().toLocaleDateString('pt-BR'), disciplina: 'Instalações elétricas' };
+}
+function dialogoPranchas() {
+  const ck = (id, txt, on = true) => `<label class="chk"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${txt}</label>`;
+  const escalas = [25, 50, 75, 100, 125];
+  modal('Gerar pranchas', `<div class="pranchas-op">
+    <div><h4>Folha</h4><p>Formato <select id="pc-papel"><option value="auto">Automático (menor que couber)</option>${Object.keys(FOLHAS).map((f) => `<option>${f}</option>`).join('')}</select></p>
+      <p>Escala das plantas <select id="pc-escala">${escalas.map((e) => `<option value="${e}"${e === 50 ? ' selected' : ''}>1:${e}</option>`).join('')}</select></p>
+      <p class="sub">Margem e selo com projeto, proprietário, endereço e responsável técnico (edite em ARQUIVO › Configurações).</p></div>
+    <div><h4>Plantas</h4>${ck('pc-luzForca', 'Separar plantas de iluminação e de tomadas (luz e força)', false)}${ck('pc-simbolos', 'Legenda de símbolos')}${ck('pc-numerica', 'Indicação numérica com legenda de fiação', false)}${ck('pc-fundo', 'Incluir desenho de referência (DWG/DXF)')}</div>
+    <div><h4>Diagramas e quadros</h4>${ck('pc-unifilar', 'Diagramas unifilares')}${ck('pc-cargas', 'Quadros de cargas')}${ck('pc-executivo', 'Quadros executivos')}${ck('pc-geral', 'Unifilar geral (quadros subordinados)')}${ck('pc-demanda', 'Quadros de demanda', false)}${ck('pc-multifilar', 'Diagramas multifilares', false)}</div>
+    </div><div id="pc-prev"></div>`, [
+    { label: 'Pré-visualizar', run: () => previaPranchas() },
+    { label: 'Salvar PDF', primary: true, run: () => salvarPranchas() },
+  ]);
+}
+function opcoesPranchas() {
+  const o = { papel: $('#pc-papel').value, escala: Number($('#pc-escala').value) };
+  for (const k of ['luzForca', 'simbolos', 'numerica', 'fundo', 'unifilar', 'cargas', 'executivo', 'geral', 'demanda', 'multifilar']) o[k] = $(`#pc-${k}`).checked;
+  return o;
+}
+function montarPranchas(o) { return gerarPranchas({ pranchas: conteudoPranchas(o), papel: o.papel, info: infoSelo() }); }
+function previaPranchas() {
+  const r = montarPranchas(opcoesPranchas());
+  const largura = Math.min(1080, $('#modal-body').clientWidth - 30);
+  $('#pc-prev').innerHTML = `<style>${r.css}</style><p class="sub">${r.folhas.length} prancha(s): ${r.folhas.map((f) => `${f.titulo} (${f.folha})`).join(' · ')}</p>` + r.folhas.map((f, i) => {
+    const [W, H] = FOLHAS[f.folha];
+    const k = largura / (W * 3.7795);
+    const sec = r.corpo.split('<section').filter(Boolean)[i];
+    return `<div class="prev-folha" style="width:${W * 3.7795 * k}px;height:${H * 3.7795 * k}px"><div style="transform:scale(${k});transform-origin:0 0"><section${sec}</div></div>`;
+  }).join('');
+}
+async function salvarPranchas() {
+  const r = montarPranchas(opcoesPranchas());
+  if (host.salvarPdf) {
+    log(`Gerando ${r.folhas.length} prancha(s)...`);
+    const res = await host.salvarPdf(r.html, `${store.project.nome || 'projeto'} - pranchas.pdf`);
+    if (res?.erro) log(`PDF: ${res.erro}`, 'err'); else if (res) log(`Pranchas salvas: ${res.path} (${r.folhas.length} folha(s): ${[...new Set(r.folhas.map((f) => f.folha))].join(', ')}).`, 'ok');
+  } else {
+    const p = await host.exportFile(r.html, 'pranchas.html', 'html', 'Página HTML');
+    if (p) log(`Exportado: ${p}`, 'ok');
+  }
+}
+async function exportarModeloIfc() {
+  const r = exportarIfc(store.project, { ele: store.ele, hid: store.hid, nomeQuadro: (q) => store.nomeQuadro(q) }, { autor: store.project.autor, app: 'Vértice' });
+  const p = await host.exportFile(r.texto, `${store.project.nome || 'projeto'}.ifc`, 'ifc', 'Modelo IFC (BIM)');
+  const s = r.resumo;
+  if (p) log(`IFC4 exportado: ${p} — ${s.paredes} paredes, ${s.pilares} pilares, ${s.vigas} vigas, ${s.lajes} lajes, ${s.pontos} pontos, ${s.eletrodutos} eletrodutos, ${s.tubos} tubos.`, 'ok');
+}
+async function exportarXlsx(folhas, nome) {
+  const bytes = gerarXlsx(folhas);
+  if (!host.exportBinary) return log('Exportação XLSX disponível no aplicativo instalado.', 'warn');
+  const p = await host.exportBinary(bytes, nome, 'xlsx', 'Planilha Excel');
+  if (p) log(`Planilha salva: ${p}`, 'ok');
+}
+const numero = (v) => { if (typeof v === 'number') return v; const t = String(v ?? '').trim(); return /^-?[\d.]+(,\d+)?$/.test(t) ? Number(t.replace(/\./g, '').replace(',', '.')) : v; };
 
 // ---------------------------------------------------------------- DWG / DXF
 async function importarCad() {
@@ -1690,7 +2165,13 @@ function todosMateriais() {
 function relatorioMateriais() {
   const head = ['Disciplina', 'Descrição', 'Unidade', 'Quantidade'];
   const rows = todosMateriais();
-  modal('Lista de materiais', htmlTabela(head, rows) + nota('Quantidades estimadas a partir do modelo, com 10% de perdas em tubos e cabos de SPDA.'), [btnCsv(head, rows, 'lista-de-materiais.csv')]);
+  const xlsx = () => {
+    const porDisc = [...new Set(rows.map((r) => r[0]))].map((d) => ({ nome: d, cabecalho: true, larguras: [62, 10, 12], linhas: [['Descrição', 'Unidade', 'Quantidade'], ...rows.filter((r) => r[0] === d).map((r) => [r[1], r[2], numero(r[3])])] }));
+    exportarXlsx([{ nome: 'Todos', cabecalho: true, larguras: [16, 62, 10, 12], linhas: [head, ...rows.map((r) => [r[0], r[1], r[2], numero(r[3])])] }, ...porDisc], 'lista-de-materiais.xlsx');
+  };
+  modal('Lista de materiais', htmlTabela(head, rows) + nota('Quantidades estimadas a partir do modelo, com 10% de perdas em tubos e cabos de SPDA.'), [
+    { label: 'Exportar XLSX', run: xlsx }, btnCsv(head, rows, 'lista-de-materiais.csv'),
+    { label: 'Salvar PDF', run: () => salvarPdf('Lista de materiais', htmlTabela(head, rows), 'lista-de-materiais.pdf') }]);
 }
 function todasVerificacoes() {
   const out = [
@@ -1791,6 +2272,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.ctrlKey && k === 'v') { e.preventDefault(); store.paste(); }
   else if (e.ctrlKey && k === 'a') { e.preventDefault(); selecionarTudo(true); }
   else if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else { $('#menu').hidden = true; plan.cancel(); } }
+  else if (e.key === 'Delete' && store.selection?.kind === 'eletroduto') acaoProps('soltaTrecho', store.selection);
   else if (e.key === 'Delete' && store.selItens().length) store.remove(store.selection);
   else if (e.key === 'F8') toggleSetting('orto');
   else if (e.key === 'F7') toggleSetting('grid');
@@ -1832,4 +2314,4 @@ store.setTool('selecionar');
 requestAnimationFrame(() => plan.zoomExtents());
 log('Vértice pronto. Projeto exemplo com arquitetura, estrutura, elétrico, hidrossanitário e SPDA.', 'ok');
 window.__vertice = store; // usado pelos testes automatizados
-window.__vertice_api = { exportarDxf: () => exportarDxf(store.project, store, store.project.pavimentos), lerDxf, paraFundo, paredesDeLinhas, abrirDoc, docs, toScreen: (x, y) => plan.toScreen(x, y) };
+window.__vertice_api = { exportarDxf: () => exportarDxf(store.project, store, store.project.pavimentos), lerDxf, paraFundo, paredesDeLinhas, abrirDoc, docs, toScreen: (x, y) => plan.toScreen(x, y), projeto: () => JSON.stringify(store.project) };

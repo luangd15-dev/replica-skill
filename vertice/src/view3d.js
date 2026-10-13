@@ -276,8 +276,10 @@ export class View3D {
         if (!visivel(a.pav) || !visivel(b.pav)) continue;
         const raio = Math.max(0.01, sg.dn / 2000);
         if (a.pav === b.pav) {
-          const yc = a.pav.cota + a.pav.peDireito - 0.12;
-          const pA = V(a.x, Math.min(a.z, yc), a.y), pB = V(b.x, Math.min(b.z, yc), b.y);
+          // pelo forro ou, para tomadas baixas, pelo contrapiso
+          const piso = sg.nivel === 'piso';
+          const yc = piso ? a.pav.cota + 0.04 : a.pav.cota + a.pav.peDireito - 0.12;
+          const pA = V(a.x, piso ? Math.max(a.z, yc) : Math.min(a.z, yc), a.y), pB = V(b.x, piso ? Math.max(b.z, yc) : Math.min(b.z, yc), b.y);
           const topoA = V(a.x, yc, a.y), quina = V(b.x, yc, a.y), topoB = V(b.x, yc, b.y);
           tuboReto(pA, topoA, raio, eletroduto); tuboReto(topoA, quina, raio, eletroduto); tuboReto(quina, topoB, raio, eletroduto); tuboReto(topoB, pB, raio, eletroduto);
         } else {

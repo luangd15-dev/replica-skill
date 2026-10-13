@@ -36,10 +36,17 @@ arquivos de nenhum software comercial.
 ### Elétrico (NBR 5410)
 
 - **Eletrodutos automáticos**: a rede de cada quadro é gerada sem desenhar trecho a trecho
-  (árvore mínima com distâncias ortogonais e descidas de teto); circuitos diferentes
-  evitam dividir o mesmo trecho e TUE ganha eletroduto exclusivo.
+  (árvore mínima com distâncias ortogonais); iluminação pelo forro, tomadas baixas pelo
+  piso (tracejado), TUE em eletroduto exclusivo e prumadas entre pavimentos pelas caixas
+  de passagem.
+- **Eletroduto manual**: lance um trecho entre dois pontos, caixas ou quadros, ou fixe um
+  trecho automático; o traçado passa a respeitá-lo. Material, diâmetro mínimo e taxa de
+  ocupação configuráveis.
+- **Comprimento entre caixas** (NBR 5410 6.2.11.1.6): cada trecho conta as curvas e o máximo
+  de 15 m menos 3 m por curva; os trechos acima ficam marcados e as caixas de passagem
+  podem ser inseridas automaticamente.
 - **Fiação por trecho**: fase, neutro, terra e retornos de cada comando, travessas entre
-  paralelos; diâmetro do eletroduto pela taxa de ocupação de 40%.
+  paralelos; janela do trecho com área útil, ocupação, curvas e ligações elétricas.
 - **Dimensionamento**: seção por capacidade de condução com agrupamento real (tab. 42) e
   temperatura (tab. 40), queda de tensão pelo comprimento da rede, disjuntor com
   Ib ≤ In ≤ Iz, equilíbrio de fases, demanda, alimentadores e disjuntor geral.
@@ -47,13 +54,29 @@ arquivos de nenhum software comercial.
   DPS, reservas mínimas e tamanho do quadro em módulos DIN.
 - **Lançamento automático**: reconhecimento de ambientes (nomes do DWG), luminárias pelo
   método dos lúmens e tomadas pelos mínimos da NBR 5410 9.5.2.
+- **Processar**: balanceia e grava as fases, insere caixas de passagem, renumera circuitos
+  e mostra o resumo; seção fixada por circuito e peça (módulos) escolhida por quadro.
 - **Gerenciador elétrico**: árvore entrada → medição → quadros → circuitos → comandos,
-  com arrastar e soltar; alertas na planta; centro de cargas.
-- **Documentos**: diagrama unifilar (SVG/PDF), quadro de cargas, memorial descritivo,
-  relatório luminotécnico, lista de materiais.
+  com arrastar e soltar, renumerar e eliminar circuitos não utilizados; alertas na
+  planta; centro de cargas.
+- **Planta**: completa ou só iluminação, só tomadas (luz e força) ou alimentação;
+  indicação numérica dos eletrodutos com legenda de fiação; otimização das indicações
+  (rótulos sem sobreposição).
+- **Documentos**: diagrama unifilar, unifilar geral (quadros subordinados), diagrama
+  multifilar, quadro executivo (trilhos DIN), quadro de cargas, quadro de demanda,
+  dimensionamento de eletrodutos, legendas de símbolos e de fiação, relatório
+  luminotécnico, memorial descritivo completo e lista de materiais (XLSX, CSV, PDF).
+
+### Entrega
+
+- **Pranchas** A4–A0 (ou a menor que couber) com margem e selo: plantas em escala, legendas,
+  notas, diagramas e quadros; pré-visualização e PDF com uma folha por página.
+- **IFC4** (BIM) com pavimentos, paredes, pilares, vigas, lajes, pontos elétricos e
+  hidrossanitários, eletrodutos e tubulações, e propriedades (circuito, DN, condutores).
+- **DWG/DXF** das plantas, como antes.
 
 Relatórios: quadro de cargas, vigas, pilares, fundações, água fria, esgoto, SPDA,
-lista de materiais de todas as disciplinas e verificações, em CSV, HTML ou PDF.
+lista de materiais de todas as disciplinas e verificações, em XLSX, CSV, HTML ou PDF.
 
 ## DWG e DXF
 

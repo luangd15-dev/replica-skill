@@ -12,6 +12,15 @@ export const COR = {
 };
 
 export const DESENHO = ['linha', 'retangulo', 'circulo', 'texto', 'medir'];
+// identificação estável de um trecho de eletroduto (entre dois elementos)
+export const chaveSeg = (sg) => `${sg.de.el.id}|${sg.para.el.id}`;
+// numeração das indicações de eletrodutos de um pavimento (legenda de fiação)
+export function indicacoesPavimento(ele, pav) {
+  const m = new Map();
+  let n = 0;
+  for (const sg of ele?.segmentos || []) if (sg.de.pav === pav && sg.para.pav === pav) m.set(sg, ++n);
+  return m;
+}
 const GRUPO_TIPO = Object.fromEntries(Object.entries(TIPOS).filter(([, t]) => t.disc === 'ele' && t.grupo).map(([k, t]) => [k, t.grupo]));
 const COMANDOS = ['interruptor', 'paralelo', 'intermediario', 'dimmer', 'sensor', 'pulsador'];
 
@@ -104,6 +113,7 @@ export class Plan2D {
       texto: 'Clique onde o texto começa.',
       medir: this.start ? 'Clique o segundo ponto.' : 'Clique o primeiro ponto da medição.',
       atribuir: c ? `Clique nos pontos para atribuir ao circuito ${c.nome}.` : 'Crie um circuito primeiro.',
+      eletroduto: this.start ? 'Clique o ponto, caixa ou quadro de chegada. O traçado automático passa a usar este eletroduto (clicar de novo no mesmo par remove).' : 'Clique o ponto, caixa ou quadro de saída do eletroduto.',
     };
     if (TIPOS[this.tool]) return `Clique para inserir: ${TIPOS[this.tool].nome}.` + (GRUPO_TIPO[this.tool] && c ? ` Circuito ativo: ${c.nome}.` : '');
     return H[this.tool] || '';
@@ -151,6 +161,7 @@ export class Plan2D {
 
     if (this.tool === 'selecionar') {
       const hit = this.hitTest(p.raw);
+      if (hit?.kind === 'eletroduto') return s.select(hit);
       if (hit) {
         if (e.shiftKey || e.ctrlKey) return s.toggleSelect(hit);
         if (!s.isSelected(hit.ref)) s.select(hit);
@@ -192,6 +203,21 @@ export class Plan2D {
       const amb = (this.floor.ambientes || []).find((a) => p.raw.x >= a.x1 && p.raw.x <= a.x2 && p.raw.y >= a.y1 && p.raw.y <= a.y2);
       if (!amb) return s.log('Clique dentro de um ambiente. Use "Ambientes" para reconhecê-los a partir das paredes.', 'warn');
       return s.distribuir(this.tool, amb);
+    }
+    if (this.tool === 'eletroduto') {
+      const hit = this.hitTest(p.raw);
+      const el = hit?.kind === 'elemento' && TIPOS[hit.ref.tipo]?.disc === 'ele' ? hit.ref : null;
+      if (!el) return s.log('Clique num ponto elétrico, caixa de passagem ou quadro.', 'warn');
+      if (!this.start) { this.start = { x: el.x, y: el.y, el }; s.refreshHint(); return this.render(); }
+      const a = this.start.el;
+      this.start = null;
+      if (a === el) return s.refreshHint();
+      const lista = (this.floor.eletrodutos ||= []);
+      const i = lista.findIndex((m) => (m.a === a.id && m.b === el.id) || (m.a === el.id && m.b === a.id));
+      if (i >= 0) { s.commit('Remover eletroduto', () => lista.splice(i, 1)); s.log('Eletroduto lançado removido; o traçado volta a ser automático.'); }
+      else { s.commit('Eletroduto', () => lista.push({ id: s.uid('M'), a: a.id, b: el.id })); s.log(`Eletroduto lançado: ${TIPOS[a.tipo].sigla} → ${TIPOS[el.tipo].sigla}. O traçado automático passa por ele.`, 'ok'); }
+      s.refreshHint();
+      return;
     }
     if (this.tool === 'atribComando') {
       const hit = this.hitTest(p.raw);
@@ -269,7 +295,7 @@ export class Plan2D {
     }
     if (!p.inside) return;
     this.store.setCoord(p.x, p.y);
-    this.hover = ['selecionar', 'apagar', 'atribuir', 'atribComando'].includes(this.tool) ? this.hitTest(p.raw) : null;
+    this.hover = ['selecionar', 'apagar', 'atribuir', 'atribComando', 'eletroduto'].includes(this.tool) ? this.hitTest(p.raw) : null;
     this.cv.title = this.dicaEm(p.raw);
     this.render();
   }
@@ -349,6 +375,8 @@ export class Plan2D {
       if (d < Math.max(0.25, tolPx * 1.5) && d < bd) { best = { kind: 'elemento', ref: el }; bd = d; }
     }
     if (best) return best;
+    const sg = this.segmentoEm(p, tolPx);
+    if (sg) return { kind: 'eletroduto', ref: sg, chave: chaveSeg(sg) };
     if (this.vis('est')) for (const v of f.vigas || []) {
       const d = segDist(p, v);
       if (d < v.b / 200 + tolPx && d < bd) { best = { kind: 'viga', ref: v }; bd = d; }
@@ -459,12 +487,23 @@ export class Plan2D {
     if (!this.w) return;
     this.store.onRender?.();
     const c = this.ctx, s = this.store, f = this.floor;
+    // otimização das indicações: os rótulos evitam os símbolos e os outros rótulos
+    this.ocup = [];
+    this.otimizar = s.settings.otimizar !== false;
+    if (this.otimizar) {
+      const r = this.symSize() + 2;
+      for (const el of f.elementos) {
+        if (el.tipo === 'pilar') continue;
+        const P = this.toScreen(el.x, el.y);
+        if (P.x > -50 && P.y > -50 && P.x < this.w + 50 && P.y < this.h + 50) this.ocup.push([P.x - r, P.y - r, P.x + r, P.y + r]);
+      }
+    }
     c.clearRect(0, 0, this.w, this.h);
     c.fillStyle = '#ffffff';
     c.fillRect(0, 0, this.w, this.h);
     if (s.settings.grid) this.drawGrid();
     if (f.fundo && this.vis('fundo')) this.drawFundo(f.fundo);
-    this.drawAxes();
+    if (!this.impressao) this.drawAxes();
 
     const idx = s.project.pavimentos.indexOf(f);
     const below = s.project.pavimentos[idx - 1];
@@ -496,6 +535,7 @@ export class Plan2D {
     for (const el of f.elementos) {
       const d = TIPOS[el.tipo]?.disc;
       if (!this.vis(d)) continue;
+      if (d === 'ele' && !this.elementoNaPlanta(el)) continue;
       this.foco(d);
       this.drawElement(el);
     }
@@ -530,6 +570,10 @@ export class Plan2D {
       c2.stroke(); c2.restore();
       const L = Math.hypot(m.x - a.x, m.y - a.y);
       this.tag(this.tool === 'circulo' ? `R = ${fmt(L)} m` : this.tool === 'retangulo' ? `${fmt(Math.abs(m.x - a.x))} × ${fmt(Math.abs(m.y - a.y))} m` : `${fmt(L)} m`, (A.x + B.x) / 2, (A.y + B.y) / 2 - 12, COR.sel);
+    } else if (this.tool === 'eletroduto' && this.start) {
+      const a = this.toScreen(this.start.x, this.start.y), b = this.toScreen(this.mouse.x, this.mouse.y);
+      c.save(); c.strokeStyle = '#c98a00'; c.lineWidth = 2.5; c.setLineDash([8, 4]);
+      c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, a.y); c.lineTo(b.x, b.y); c.stroke(); c.restore();
     } else if (TIPOS[this.tool] && this.mouse.inside) {
       c.save(); c.globalAlpha = 0.5;
       this.drawSymbol(this.tool, this.toScreen(this.mouse.x, this.mouse.y), COR.sel, { b: TIPOS[this.tool].b, h: TIPOS[this.tool].h });
@@ -680,26 +724,38 @@ export class Plan2D {
     if (!ele) return;
     const L = (a, b) => { const A = this.toScreen(a.x, a.y), B = this.toScreen(b.x, b.y); c.moveTo(A.x, A.y); c.lineTo(B.x, A.y); c.lineTo(B.x, B.y); return [A, B]; };
     const ativo = s.activeCircuit?.id;
-    for (const sg of ele.segmentos) {
+    const selChave = s.selection?.kind === 'eletroduto' ? s.selection.chave : null;
+    const planta = this.tipoPlanta();
+    const numerica = s.settings.indicacaoNumerica;
+    const indic = numerica ? indicacoesPavimento(ele, f) : null;
+    if (planta !== 'alimentacao') for (const sg of ele.segmentos) {
       const aqui = sg.de.pav === f, la = sg.para.pav === f;
       if (!aqui && !la) continue;
+      if (!this.passaPlanta(sg)) continue;
+      const circs = [...sg.circuitos].filter((id) => this.circuitoNaPlanta(id));
       if (aqui && la) {
-        const um = sg.circuitos.size === 1 ? [...sg.circuitos][0] : null;
+        const um = circs.length === 1 ? circs[0] : null;
         const destaque = ativo && sg.circuitos.has(ativo);
+        const sel = selChave === chaveSeg(sg);
         c.save();
-        c.strokeStyle = um ? corCircuito(s.project, um) : '#4a5562';
-        c.lineWidth = destaque ? 2.6 : 1.5;
-        if (ativo && !destaque) c.globalAlpha *= 0.45;
+        c.strokeStyle = sel ? COR.sel : sg.excede ? '#d0453a' : um ? corCircuito(s.project, um) : '#4a5562';
+        c.lineWidth = (sel ? 3.4 : destaque ? 2.6 : 1.5) + (sg.manual ? 0.8 : 0);
+        // eletroduto pelo piso: tracejado (convenção de projeto)
+        if (sg.nivel === 'piso') c.setLineDash([7, 4]);
+        if (ativo && !destaque && !sel) c.globalAlpha *= 0.45;
         c.beginPath();
         const [A, B] = L(sg.de, sg.para);
         c.stroke();
         c.restore();
-        if (this.scale > 26 && Math.abs(B.x - A.x) + Math.abs(B.y - A.y) > 46) {
+        if ((this.scale > 26 || numerica) && Math.abs(B.x - A.x) + Math.abs(B.y - A.y) > (numerica ? 24 : 46)) {
           const longoX = Math.abs(B.x - A.x) >= Math.abs(B.y - A.y);
           const mx = longoX ? (A.x + B.x) / 2 : B.x, my = longoX ? A.y : (A.y + B.y) / 2;
-          const nums = [...sg.circuitos].map((id) => s.project.circuitos.find((x) => x.id === id)?.numero).filter(Boolean).sort((x, y) => x - y);
-          this.tag(`${nums.join(',')} · Ø${sg.dn}`, mx, my - 9, '#4a5562');
-          if (this.scale > 45) this.fiacao(mx, my + 1, sg.cont, longoX);
+          if (numerica) this.indicacao(indic.get(sg), mx, my, sg.excede ? '#d0453a' : '#4a5562');
+          else {
+            const nums = circs.map((id) => s.project.circuitos.find((x) => x.id === id)?.numero).filter(Boolean).sort((x, y) => x - y);
+            this.tag(`${nums.join(',')} · Ø${sg.dn}`, mx, my - 9, sg.excede ? '#d0453a' : '#4a5562', 'center', longoX);
+            if (this.scale > 45) this.fiacao(mx, my + 1, sg.cont, longoX);
+          }
         }
       } else {
         // prumada: chega ou sai deste pavimento
@@ -709,8 +765,8 @@ export class Plan2D {
         this.tag(`${sobe ? '↑' : '↓'} Ø${sg.dn}`, P.x + 14, P.y + 12, '#4a5562', 'left');
       }
     }
-    for (const al of ele.alimentadores) {
-      const pa = s.ele.redePorQuadro && al.de, pd = al.para;
+    if (planta === 'completa' || planta === 'alimentacao') for (const al of ele.alimentadores) {
+      const pa = al.de, pd = al.para;
       const fa = s.project.pavimentos.find((pv) => pv.elementos.includes(pa)), fb = s.project.pavimentos.find((pv) => pv.elementos.includes(pd));
       if (fa === f && fb === f) {
         c.save(); c.strokeStyle = '#b05a00'; c.lineWidth = 2.4; c.setLineDash([10, 4]);
@@ -727,6 +783,32 @@ export class Plan2D {
       this.rotulos = true;
       this.tag(`Centro de cargas · ${Math.round(cc.P)} VA`, P.x + 16, P.y - 16, '#d0453a', 'left');
     }
+  }
+
+  // indicação numérica do eletroduto (o conteúdo vai para a legenda de fiação)
+  indicacao(n, x, y, col) {
+    if (this.rotulos === false || n == null) return;
+    const c = this.ctx;
+    const r = 8;
+    const p = this.livre([[0, -r - 3], [0, r + 3], [-r * 2.4, 0], [r * 2.4, 0], [0, -2 * r - 6], [0, 2 * r + 6]].map(([dx, dy]) => [x + dx - r, y + dy - r, x + dx + r, y + dy + r]));
+    const cx = (p[0] + p[2]) / 2, cy = (p[1] + p[3]) / 2;
+    c.save();
+    c.fillStyle = '#fff'; c.strokeStyle = col; c.lineWidth = 1.1;
+    c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.fillStyle = col; c.font = '700 10px "Segoe UI", system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(String(n), cx, cy + 0.5);
+    c.restore();
+  }
+
+  // escolhe a primeira posição candidata (retângulos de tela) que não colide com o que já foi desenhado
+  livre(cands) {
+    let esc = cands[0];
+    if (this.otimizar) {
+      const bate = (r) => this.ocup.some((o) => r[0] < o[2] && r[2] > o[0] && r[1] < o[3] && r[3] > o[1]);
+      esc = cands.find((r) => !bate(r)) || cands[0];
+    }
+    this.ocup?.push(esc);
+    return esc;
   }
 
   // marcas de fiação no trecho: fases, neutro, terra e retornos
@@ -786,6 +868,36 @@ export class Plan2D {
     c.restore();
   }
 
+  // trecho de eletroduto deste pavimento sob o ponto (trajeto em L)
+  segmentoEm(p, tol = 6 / this.scale) {
+    const s = this.store;
+    if (!s.ele || !this.vis('ele')) return null;
+    for (const sg of s.ele.segmentos) {
+      if (sg.de.pav !== this.floor || sg.para.pav !== this.floor) continue;
+      if (!this.passaPlanta(sg)) continue;
+      const d = Math.min(segDist(p, { x1: sg.de.x, y1: sg.de.y, x2: sg.para.x, y2: sg.de.y }), segDist(p, { x1: sg.para.x, y1: sg.de.y, x2: sg.para.x, y2: sg.para.y }));
+      if (d <= tol) return sg;
+    }
+    return null;
+  }
+
+  // plantas por rede (luz e força): o que aparece em cada uma
+  tipoPlanta() { return this.store.settings.planta || 'completa'; }
+  circuitoNaPlanta(cid) {
+    const pl = this.tipoPlanta();
+    if (pl === 'completa') return true;
+    if (pl === 'alimentacao') return false;
+    const t = this.store.project.circuitos.find((c) => c.id === cid)?.tipo;
+    return pl === 'iluminacao' ? t === 'ILUM' : t === 'TUG' || t === 'TUE';
+  }
+  passaPlanta(sg) { return this.tipoPlanta() === 'completa' || [...sg.circuitos].some((id) => this.circuitoNaPlanta(id)); }
+  elementoNaPlanta(el) {
+    const t = TIPOS[el.tipo];
+    if (t?.disc !== 'ele' || this.tipoPlanta() === 'completa' || t.quadro) return true;
+    if (el.tipo === 'cp') return this.tipoPlanta() !== 'alimentacao';
+    return this.circuitoNaPlanta(el.circuitoId);
+  }
+
   // texto da dica (title) para o ponto sob o mouse: alertas do elemento ou composição do eletroduto
   dicaEm(p) {
     const s = this.store;
@@ -800,17 +912,12 @@ export class Plan2D {
       }
       return '';
     }
-    if (!s.ele || !this.vis('ele')) return '';
-    const tol = 6 / this.scale;
-    for (const sg of s.ele.segmentos) {
-      if (sg.de.pav !== this.floor || sg.para.pav !== this.floor) continue;
-      const d = Math.min(segDist(p, { x1: sg.de.x, y1: sg.de.y, x2: sg.para.x, y2: sg.de.y }), segDist(p, { x1: sg.para.x, y1: sg.de.y, x2: sg.para.x, y2: sg.para.y }));
-      if (d > tol) continue;
-      const nums = [...sg.circuitos].map((id) => s.project.circuitos.find((x) => x.id === id)?.nome).join(', ');
-      const secs = [...new Set(sg.condutores.map((k) => String(k.secao).replace('.', ',')))].join(' / ');
-      return `Eletroduto DN ${sg.dn} · ${fmt(sg.comp)} m · ocupação ${Math.round(sg.ocupacao * 100)}%\n${sg.cont.F} fase · ${sg.cont.N} neutro · ${sg.cont.T} terra · ${sg.cont.R} retorno (${secs} mm²)\n${nums}`;
-    }
-    return '';
+    const sg = this.segmentoEm(p);
+    if (!sg) return '';
+    const nums = [...sg.circuitos].map((id) => s.project.circuitos.find((x) => x.id === id)?.nome).join(', ');
+    const secs = [...new Set(sg.condutores.map((k) => String(k.secao).replace('.', ',')))].join(' / ');
+    return `Eletroduto DN ${sg.dn} pelo ${sg.nivel === 'piso' ? 'piso' : 'forro'}${sg.manual ? ' (lançado)' : ''} · ${fmt(sg.comp)} m · ${sg.curvas} curva(s), máx. ${fmt(sg.maxComp, 0)} m · ocupação ${Math.round(sg.ocupacao * 100)}%`
+      + `${sg.excede ? '\n⚠ Acima do comprimento máximo entre caixas: insira uma caixa de passagem.' : ''}\n${sg.cont.F} fase · ${sg.cont.N} neutro · ${sg.cont.T} terra · ${sg.cont.R} retorno (${secs} mm²)\n${nums}`;
   }
 
   drawRedesHid() {
@@ -1024,16 +1131,26 @@ export class Plan2D {
     const estilo = this.store.settings.chamada?.[disc] || 'simples';
     const c = this.ctx;
     const off = this.symSize() + 6;
-    const tx = x + off + 8, ty = y - off - 6;
+    c.save();
+    c.font = '600 11px "Segoe UI", system-ui, sans-serif';
+    const w = c.measureText(texto).width;
+    c.restore();
+    // quadrantes candidatos para o texto (otimização das indicações)
+    const cands = [[1, -1], [1, 1], [-1, -1], [-1, 1], [1.9, -1.9], [-1.9, -1.9], [1.9, 1.9], [-1.9, 1.9]].map(([sx, sy]) => {
+      const tx = sx > 0 ? x + off * sx + 8 : x + off * sx - 8 - w, ty = y + (off + 6) * sy;
+      return [tx - 5, ty - 9, tx + w + 5, ty + 9, sx, sy];
+    });
+    const esc = this.livre(cands);
+    const tx = esc[0] + 5, ty = esc[1] + 9, sx = esc[4] ?? 1, sy = esc[5] ?? -1;
     c.save();
     c.strokeStyle = col;
     c.lineWidth = 0.8;
     c.globalAlpha *= 0.8;
-    c.beginPath(); c.moveTo(x + this.symSize() * 0.7, y - this.symSize() * 0.7); c.lineTo(tx - 3, ty + 1); c.stroke();
+    const ax = sx > 0 ? tx - 3 : tx + w + 3;
+    c.beginPath(); c.moveTo(x + this.symSize() * 0.7 * Math.sign(sx), y + this.symSize() * 0.7 * Math.sign(sy)); c.lineTo(ax, ty + 1); c.stroke();
     c.restore();
     c.save();
     c.font = '600 11px "Segoe UI", system-ui, sans-serif';
-    const w = c.measureText(texto).width;
     c.fillStyle = 'rgba(255,255,255,.92)';
     c.strokeStyle = col;
     c.lineWidth = 1;
@@ -1052,7 +1169,7 @@ export class Plan2D {
     c.restore();
   }
 
-  tag(t, x, y, col, align = 'center') {
+  tag(t, x, y, col, align = 'center', horizontal = true) {
     if (this.rotulos === false) return;
     const c = this.ctx;
     c.save();
@@ -1060,7 +1177,12 @@ export class Plan2D {
     c.textAlign = align;
     c.textBaseline = 'middle';
     const w = c.measureText(t).width;
-    const bx = align === 'left' ? x - 2 : align === 'right' ? x - w - 3 : x - w / 2 - 3;
+    const bx0 = align === 'left' ? x - 2 : align === 'right' ? x - w - 3 : x - w / 2 - 3;
+    // posições alternativas: acima/abaixo (trecho horizontal) ou ao lado (vertical)
+    const desl = horizontal ? [[0, 0], [0, 19], [0, -15], [0, 34], [w * 0.6, 0], [-w * 0.6, 0]] : [[0, 0], [w / 2 + 10, 9], [-w / 2 - 10, 9], [0, -16], [0, 16]];
+    const [r0] = [this.livre(desl.map(([dx, dy]) => [bx0 + dx, y + dy - 7, bx0 + dx + w + 6, y + dy + 7]))];
+    const bx = r0[0];
+    x += bx - bx0; y = r0[1] + 7;
     c.fillStyle = 'rgba(255,255,255,.88)';
     c.fillRect(bx, y - 7, w + 6, 14);
     c.fillStyle = col;
@@ -1093,3 +1215,36 @@ function cruza(x1, y1, x2, y2, x3, y3, x4, y4) {
 }
 
 export const fmt = (n, d = 2) => Number(n).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+// planta de um pavimento renderizada fora da tela, em escala real, para as pranchas.
+// pxmm: resolução (px por mm de papel); k: ampliação de símbolos e textos (k px de saída por px de tela)
+export function renderizarPlanta(store, pav, { escala = 50, pxmm = 8, k = 2.1, planta = 'completa', numerica = false, fundo = true, folga = 0.9 } = {}) {
+  const pts = [];
+  for (const w of pav.paredes) pts.push([w.x1, w.y1], [w.x2, w.y2]);
+  for (const e of pav.elementos) pts.push([e.x, e.y]);
+  for (const a of pav.ambientes || []) pts.push([a.x1, a.y1], [a.x2, a.y2]);
+  if (fundo && pav.fundo) for (let i = 0; i < pav.fundo.s.length; i += 5) pts.push([pav.fundo.s[i + 1], pav.fundo.s[i + 2]], [pav.fundo.s[i + 3], pav.fundo.s[i + 4]]);
+  if (!pts.length) pts.push([0, 0], [5, 5]);
+  const minX = Math.min(...pts.map((p) => p[0])) - folga, maxX = Math.max(...pts.map((p) => p[0])) + folga;
+  const minY = Math.min(...pts.map((p) => p[1])) - folga, maxY = Math.max(...pts.map((p) => p[1])) + folga;
+  const wmm = ((maxX - minX) * 1000) / escala, hmm = ((maxY - minY) * 1000) / escala;
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(wmm * pxmm));
+  cv.height = Math.max(1, Math.round(hmm * pxmm));
+  const pl = Object.create(Plan2D.prototype);
+  // prancha elétrica: arquitetura e elétrico; estrutura esmaecida e sem rótulos; hidráulica e SPDA ocultas
+  const settings = { ...store.settings, grid: false, foco: 'ele', planta, indicacaoNumerica: numerica, centroCargas: false, vis: { ...store.settings.vis, hid: false, spda: false, fundo: fundo && store.settings.vis.fundo !== false } };
+  pl.store = Object.create(store, {
+    floor: { get: () => pav }, settings: { value: settings }, selection: { value: null },
+    activeCircuit: { get: () => null }, activeCircuitId: { value: null }, isSelected: { value: () => false }, onRender: { value: null },
+  });
+  Object.assign(pl, { cv, ctx: cv.getContext('2d'), tool: 'selecionar', mouse: { inside: false, x: 0, y: 0 }, start: null, box: null, hover: null, drag: null, impressao: true });
+  pl.ctx.setTransform(k, 0, 0, k, 0, 0);
+  pl.w = cv.width / k;
+  pl.h = cv.height / k;
+  pl.scale = ((1000 / escala) * pxmm) / k;
+  pl.ox = -minX * pl.scale;
+  pl.oy = -minY * pl.scale;
+  pl.render();
+  return { src: cv.toDataURL('image/png'), wmm, hmm };
+}

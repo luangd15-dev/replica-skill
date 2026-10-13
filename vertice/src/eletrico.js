@@ -39,7 +39,7 @@ const FD_ILUM_TUG = [[1, 0.86], [2, 0.75], [3, 0.66], [4, 0.59], [5, 0.52], [6, 
 const FD_TUE = [1, 1, 1, 0.84, 0.76, 0.7, 0.65, 0.6, 0.57, 0.54, 0.52, 0.49, 0.48, 0.46, 0.45, 0.44, 0.43, 0.42, 0.41, 0.4, 0.4];
 export const fdIlumTug = (kw) => FD_ILUM_TUG.find(([lim]) => kw <= lim)[1];
 export const fdTue = (n) => (n <= 0 ? 0 : FD_TUE[Math.min(n, FD_TUE.length - 1)] ?? 0.39);
-const MODULOS_QD = [12, 18, 24, 36, 48, 60, 72, 96];
+export const MODULOS_QD = [12, 18, 24, 36, 48, 60, 72, 96];
 
 export const ESQUEMAS = { 'F+N': ['R'], '2F+N': ['R', 'S'], '3F+N': ['R', 'S', 'T'] };
 export const COMANDO_TIPOS = ['interruptor', 'paralelo', 'intermediario', 'dimmer', 'sensor', 'pulsador'];
@@ -50,11 +50,20 @@ export const fmtSec = (s) => (s == null ? '-' : String(s).replace('.', ','));
 const area = (d) => (Math.PI * d * d) / 4;
 
 export function configEletrica(projeto) {
-  return { tensaoFN: 127, tensaoFF: 220, quedaMax: QUEDA_MAX, quedaAlim: 1, temperatura: 30, ...(projeto.eletrica || {}) };
+  return {
+    tensaoFN: 127, tensaoFF: 220, quedaMax: QUEDA_MAX, quedaAlim: 1, temperatura: 30,
+    // eletrodutos: diâmetro mínimo, taxa de ocupação (NBR 5410 6.2.11.1.6), tomadas baixas pelo piso ou pelo forro,
+    // trecho contínuo máximo entre caixas (15 m, menos 3 m por curva de 90°)
+    diametroMin: 20, ocupacaoMax: 0.4, rotaBaixa: 'piso', trechoMax: 15,
+    material: 'Eletroduto corrugado PVC',
+    ...(projeto.eletrica || {}),
+  };
 }
 
+export const MATERIAIS_ELETRODUTO = ['Eletroduto corrugado PVC', 'Eletroduto rígido PVC roscável', 'Eletroduto PEAD', 'Eletroduto de aço galvanizado', 'Eletrocalha perfurada'];
+
 // ---------------------------------------------------------------- dimensionamento de um circuito
-export function dimensionar({ potencia, tensao, comprimentoM, grupo, polos = 1, fAgr = 1, fTemp = 1, quedaMax = QUEDA_MAX, secaoMin }) {
+export function dimensionar({ potencia, tensao, comprimentoM, grupo, polos = 1, fAgr = 1, fTemp = 1, quedaMax = QUEDA_MAX, secaoMin, secaoFixa }) {
   // tensao: tensão de referência do circuito (F-N para 1 polo, F-F para 2 e 3 polos)
   const ib = tensao > 0 ? (polos === 3 ? potencia / (Math.sqrt(3) * tensao) : potencia / tensao) : 0;
   const carregados = polos === 3 ? 3 : 2;
@@ -64,6 +73,7 @@ export function dimensionar({ potencia, tensao, comprimentoM, grupo, polos = 1, 
   for (const row of CAPACIDADE) {
     const secao = row[0];
     if (secao < secMin) continue;
+    if (secaoFixa && secao !== Number(secaoFixa)) continue;
     const iz = row[carregados === 3 ? 2 : 1] * fAgr * fTemp;
     const disj = DISJUNTORES.find((d) => d >= ib && d <= iz);
     if (!disj) continue;
@@ -71,7 +81,7 @@ export function dimensionar({ potencia, tensao, comprimentoM, grupo, polos = 1, 
     if (queda > quedaMax) continue;
     return { ib, secao, iz, disjuntor: disj, queda, avisos, ok: true, carregados };
   }
-  avisos.push('Nenhuma combinação de cabo e disjuntor atende. Divida o circuito.');
+  avisos.push(secaoFixa ? `A seção fixada de ${fmtSec(secaoFixa)} mm² não atende (corrente, disjuntor ou queda). Libere a seção ou divida o circuito.` : 'Nenhuma combinação de cabo e disjuntor atende. Divida o circuito.');
   return { ib, secao: null, iz: null, disjuntor: null, queda: null, avisos, ok: false, carregados };
 }
 
@@ -99,29 +109,58 @@ export function comprimento(qd, rota, peDireito) {
 // ---------------------------------------------------------------- geometria da rede
 function no(el, pav) { return { el, pav, circ: el.circuitoId || null, x: el.x, y: el.y, h: el.altura ?? 0, z: pav.cota + (el.altura ?? 0) }; }
 
+// altura até a qual uma tomada (ou caixa) é "baixa" e pode ser ligada pelo piso
+export const ALTURA_BAIXA = 1.3;
+const ehQuadroNo = (n) => !!TIPOS[n.el.tipo]?.quadro;
+// pelo piso: tomadas e caixas baixas; o quadro tem saída por cima (forro) e por baixo (piso)
+const pelaBase = (n) => ehQuadroNo(n) || (['tug', 'tue', 'cp'].includes(n.el.tipo) && n.h <= ALTURA_BAIXA);
+
+// nível do trecho entre dois pontos do mesmo pavimento: pelo piso quando os dois admitem (e a rota baixa
+// é pelo piso); caso contrário pelo forro
+export function nivelTrecho(a, b, rotaBaixa = 'piso') {
+  return a.pav === b.pav && rotaBaixa === 'piso' && pelaBase(a) && pelaBase(b) && !(ehQuadroNo(a) && ehQuadroNo(b)) ? 'piso' : 'teto';
+}
+
 // comprimento do eletroduto entre dois pontos: ortogonal em planta; no mesmo pavimento sobe ao forro
-// e desce até o outro ponto; entre pavimentos, prumada direta
-export function distConduto(a, b) {
+// (ou desce ao piso) e vai até o outro ponto; entre pavimentos, prumada
+export function distConduto(a, b, rotaBaixa = 'teto') {
   const plano = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
   if (a.pav === b.pav) {
+    if (nivelTrecho(a, b, rotaBaixa) === 'piso') return plano + a.h + b.h;
     const teto = a.pav.peDireito - 0.1;
     return plano + Math.max(0, teto - a.h) + Math.max(0, teto - b.h);
   }
   return plano + Math.abs(a.z - b.z);
 }
 
+// curvas de 90° de um trecho: a mudança de direção em planta e cada subida/descida da laje até a caixa
+export function curvasTrecho(a, b, nivel) {
+  const dx = Math.abs(a.x - b.x) > 0.05, dy = Math.abs(a.y - b.y) > 0.05;
+  let n = dx && dy ? 1 : 0;
+  if (a.pav !== b.pav) return n + (dx || dy ? 2 : 0);
+  const teto = a.pav.peDireito - 0.1;
+  const dobra = (p) => (nivel === 'piso' ? p.h > 0.05 : p.h < teto - 0.3);
+  if ((dx || dy) && dobra(a)) n++;
+  if ((dx || dy) && dobra(b)) n++;
+  return n;
+}
+
 // fator de custo para ligar pontos de circuitos diferentes: incentiva cada circuito a seguir pelo
 // próprio eletroduto (menos agrupamento e eletrodutos menores), saindo do quadro quando compensa
 export const PENALIDADE_CIRCUITOS = 1.6;
-function custoLigacao(a, b) {
-  const d = distConduto(a, b);
+function custoLigacao(a, b, ctx) {
+  // eletroduto lançado à mão: o traçado passa por ele
+  if (ctx.manuais.has(`${a.el.id}|${b.el.id}`)) return 1e-3;
+  let d = distConduto(a, b, ctx.rotaBaixa);
+  // entre pavimentos, a prumada passa preferencialmente por caixas de passagem
+  if (a.pav !== b.pav && a.el.tipo !== 'cp' && b.el.tipo !== 'cp' && ctx.temCp) d *= 2.5;
   if (!a.circ || !b.circ || a.circ === b.circ) return d;
   // circuito com eletroduto exclusivo só se liga a pontos dele mesmo (ou ao quadro)
   if (a.excl || b.excl) return Infinity;
   return d * PENALIDADE_CIRCUITOS;
 }
 
-function arvoreMinima(raiz, nos) {
+function arvoreMinima(raiz, nos, ctx) {
   // Prim O(n²)
   const todos = [raiz, ...nos];
   const n = todos.length;
@@ -135,12 +174,19 @@ function arvoreMinima(raiz, nos) {
     dentro[u] = true;
     for (let v = 0; v < n; v++) {
       if (dentro[v]) continue;
-      const d = custoLigacao(todos[u], todos[v]);
+      const d = custoLigacao(todos[u], todos[v], ctx);
       if (d < melhor[v]) { melhor[v] = d; pai[v] = u; }
     }
   }
   for (const t of todos) t.filhos = [];
-  for (let i = 1; i < n; i++) { todos[i].pai = todos[pai[i]]; todos[i].comp = distConduto(todos[i], todos[pai[i]]); todos[pai[i]].filhos.push(todos[i]); }
+  for (let i = 1; i < n; i++) {
+    const t = todos[i], p = todos[pai[i]];
+    t.pai = p;
+    t.nivel = nivelTrecho(p, t, ctx.rotaBaixa);
+    t.comp = distConduto(t, p, ctx.rotaBaixa);
+    t.manual = ctx.manuais.has(`${t.el.id}|${p.el.id}`);
+    p.filhos.push(t);
+  }
   const fila = [raiz];
   raiz.prof = 0;
   while (fila.length) { const t = fila.shift(); for (const f of t.filhos) { f.prof = t.prof + 1; fila.push(f); } }
@@ -196,30 +242,53 @@ export function calcularEletrica(projeto) {
   const exclusivos = new Set(projeto.circuitos.filter((c) => c.exclusivo === true || (c.exclusivo !== false && c.tipo === 'TUE')).map((c) => c.id));
 
   // ---- rede de eletrodutos por quadro
+  // eletrodutos lançados à mão (pares de elementos), nos dois sentidos
+  const manuais = new Set();
+  for (const pav of projeto.pavimentos) for (const m of pav.eletrodutos || []) { manuais.add(`${m.a}|${m.b}`); manuais.add(`${m.b}|${m.a}`); }
   const segmentos = [];
-  const redePorQuadro = new Map();
-  for (const q of qds) {
-    const circs = projeto.circuitos.filter((c) => quadroDe.get(c.id) === q);
+  const redePorQuadro = new Map(); // rede principal de cada quadro
+  const redes = [];
+  const redeDe = new Map(); // circuito -> rede
+  const montarRede = (q, circs) => {
     const pts = circs.flatMap((c) => pontosDe.get(c.id));
     const raiz = no(q, elPav.get(q));
-    // caixas de passagem do pavimento entram como nós; as que ficarem em ponta de rede são podadas
-    const cps = elPav.get(q).elementos.filter((e) => e.tipo === 'cp');
+    // caixas de passagem dos pavimentos atendidos entram como nós; as que ficarem em ponta de rede são podadas
+    const pavs = new Set([elPav.get(q), ...pts.map((e) => elPav.get(e))]);
+    const cps = [...pavs].flatMap((pv) => pv.elementos.filter((e) => e.tipo === 'cp'));
     const nos = [...pts, ...cps].map((e) => no(e, elPav.get(e)));
     for (const t of nos) t.excl = !!(t.circ && exclusivos.has(t.circ));
-    if (!pts.length) { raiz.filhos = []; raiz.prof = 0; redePorQuadro.set(q, { raiz, nos: [raiz], porEl: new Map([[q, raiz]]) }); continue; }
-    let todos = arvoreMinima(raiz, nos);
-    let podou = true;
-    while (podou) {
-      podou = false;
-      for (const t of todos) {
-        if (t !== raiz && t.el.tipo === 'cp' && !t.filhos.length) {
-          t.pai.filhos = t.pai.filhos.filter((f) => f !== t);
-          todos = todos.filter((x) => x !== t);
-          podou = true;
+    let todos;
+    if (!pts.length) { raiz.filhos = []; raiz.prof = 0; todos = [raiz]; }
+    else {
+      todos = arvoreMinima(raiz, nos, { manuais, rotaBaixa: cfg.rotaBaixa, temCp: pavs.size > 1 && cps.length > 0 });
+      let podou = true;
+      while (podou) {
+        podou = false;
+        for (const t of todos) {
+          if (t !== raiz && t.el.tipo === 'cp' && !t.filhos.length) {
+            t.pai.filhos = t.pai.filhos.filter((f) => f !== t);
+            todos = todos.filter((x) => x !== t);
+            podou = true;
+          }
         }
       }
     }
-    redePorQuadro.set(q, { raiz, nos: todos, porEl: new Map(todos.map((t) => [t.el, t])) });
+    const rede = { quadro: q, raiz, nos: todos, porEl: new Map(todos.map((t) => [t.el, t])) };
+    redes.push(rede);
+    for (const c of circs) redeDe.set(c.id, rede);
+    return rede;
+  };
+  for (const q of qds) {
+    const circs = projeto.circuitos.filter((c) => quadroDe.get(c.id) === q);
+    // circuitos comuns compartilham a rede; com tomadas pelo piso, iluminação (forro) e força (piso) saem do quadro
+    // em redes separadas; cada circuito exclusivo (TUE) tem eletroduto próprio, podendo usar as mesmas caixas
+    const comuns = circs.filter((c) => !exclusivos.has(c.id));
+    if (cfg.rotaBaixa === 'piso') {
+      const forca = comuns.filter((c) => c.tipo !== 'ILUM');
+      redePorQuadro.set(q, montarRede(q, comuns.filter((c) => c.tipo === 'ILUM')));
+      if (forca.some((c) => pontosDe.get(c.id).length)) montarRede(q, forca);
+    } else redePorQuadro.set(q, montarRede(q, comuns));
+    for (const c of circs) if (exclusivos.has(c.id) && pontosDe.get(c.id).length) montarRede(q, [c]);
   }
 
   const polosDe = (c) => {
@@ -255,14 +324,17 @@ export function calcularEletrica(projeto) {
 
   // ---- condutores por trecho
   const segPorNo = new Map();
-  for (const [q, rede] of redePorQuadro) {
+  for (const rede of redes) {
+    const q = rede.quadro;
     for (const t of rede.nos) {
       if (t === rede.raiz) continue;
-      const s = { quadro: q, de: t.pai, para: t, comp: t.comp, circuitos: new Set(), condutoresDe: new Map(), retornos: new Map() };
+      const curvas = curvasTrecho(t.pai, t, t.nivel);
+      const s = { quadro: q, de: t.pai, para: t, comp: t.comp, nivel: t.nivel, manual: t.manual, curvas, maxComp: cfg.trechoMax - 3 * curvas,
+        circuitos: new Set(), condutoresDe: new Map(), retornos: new Map() };
       segPorNo.set(t, s);
       segmentos.push(s);
     }
-    for (const r of resultados.filter((x) => x.quadro === q)) {
+    for (const r of resultados.filter((x) => redeDe.get(x.circuito.id) === rede)) {
       const sub = new Map(); // trecho -> passa carga (true) ou só comando (false)
       for (const p of r.pontos) {
         let t = rede.porEl.get(p);
@@ -317,7 +389,7 @@ export function calcularEletrica(projeto) {
       Object.assign(r, { ib: r.potencia / tensaoRef, secao: null, disjuntor: null, queda: null, ok: true, iz: null });
       continue;
     }
-    const d = dimensionar({ potencia: r.potencia, tensao: tensaoRef, comprimentoM: r.comprimento, grupo: c.tipo, polos: r.polos, fAgr: r.fAgr, fTemp, quedaMax: cfg.quedaMax, secaoMin: c.secaoMin });
+    const d = dimensionar({ potencia: r.potencia, tensao: tensaoRef, comprimentoM: r.comprimento, grupo: c.tipo, polos: r.polos, fAgr: r.fAgr, fTemp, quedaMax: cfg.quedaMax, secaoMin: c.secaoMin, secaoFixa: c.secaoFixa });
     Object.assign(r, d, { avisos: [...r.avisos, ...d.avisos] });
     if (c.tipo === 'TUE' && r.pontos.filter((p) => TIPOS[p.tipo].carga).length > 1) {
       r.avisos.push('TUE deve ter circuito exclusivo (1 ponto).');
@@ -352,13 +424,25 @@ export function calcularEletrica(projeto) {
       for (let i = 0; i < n; i++) s.condutores.push({ circuito: cid, tipo: 'R', secao: sec, comando: letra });
     }
     const ocupada = s.condutores.reduce((a, c) => a + (AREA_CABO[c.secao] || 10), 0);
-    const taxa = s.condutores.length <= 1 ? 0.53 : s.condutores.length === 2 ? 0.31 : 0.4;
-    const e = ELETRODUTOS.find(([, di]) => ocupada <= taxa * area(di)) || ELETRODUTOS[ELETRODUTOS.length - 1];
+    const taxa = s.condutores.length <= 1 ? 0.53 : s.condutores.length === 2 ? 0.31 : cfg.ocupacaoMax;
+    const e = ELETRODUTOS.find(([dn, di]) => dn >= cfg.diametroMin && ocupada <= taxa * area(di)) || ELETRODUTOS[ELETRODUTOS.length - 1];
     s.dn = e[0];
+    s.areaUtil = area(e[1]);
+    s.areaOcupada = ocupada;
     s.ocupacao = ocupada / area(e[1]);
+    s.taxaMax = taxa;
     s.cont = { F: 0, N: 0, T: 0, R: 0 };
     for (const c of s.condutores) s.cont[c.tipo]++;
+    // NBR 5410 6.2.11.1.6: trecho contínuo sem caixa até 15 m, menos 3 m por curva; no máximo 3 curvas
+    if (s.curvas > 3 || s.comp > s.maxComp + 1e-6) {
+      s.excede = true;
+      const txt = s.curvas > 3 ? `Trecho com ${s.curvas} curvas (máximo 3): insira uma caixa de passagem.`
+        : `Trecho de ${s.comp.toFixed(1)} m com ${s.curvas} curva(s); máximo ${s.maxComp.toFixed(0)} m sem caixa. Insira uma caixa de passagem.`;
+      alerta(s.para.el, 'aviso', txt);
+    }
   }
+  const trechosLongos = segmentos.filter((s) => s.excede).length;
+  if (trechosLongos) avisos.push({ nivel: 'aviso', texto: `${trechosLongos} trecho(s) de eletroduto acima do comprimento máximo entre caixas (NBR 5410 6.2.11.1.6).` });
 
   // ---- quadros: carga por fase, demanda, reservas, DR, módulos
   const resQuadro = new Map();
@@ -410,8 +494,12 @@ export function calcularEletrica(projeto) {
     const res = {
       quadro: q, pav: elPav.get(q), esquema, fasesQ, fases, fasesDem, instalada, instaladaTotal, dIT, dTUE, demanda, deseq,
       circuitos: rs, reservas, reservasMin, drGrupos, dps, modulos,
-      tamanho: MODULOS_QD.find((m) => m >= modulos * 1.2) || MODULOS_QD[MODULOS_QD.length - 1], filhos: filhos.map((f) => f.quadro),
+      tamanho: Number(q.modulosPeca) || MODULOS_QD.find((m) => m >= modulos * 1.2) || MODULOS_QD[MODULOS_QD.length - 1], filhos: filhos.map((f) => f.quadro),
     };
+    if (q.modulosPeca && modulos > Number(q.modulosPeca)) {
+      res.excedePeca = true;
+      alerta(q, 'erro', `Quadro com mais módulos (${modulos}) do que a peça comporta (${q.modulosPeca}). Escolha um quadro maior.`);
+    }
     resQuadro.set(q, res);
     return res;
   };
@@ -440,6 +528,7 @@ export function calcularEletrica(projeto) {
       avisos.push({ nivel: 'aviso', texto: `${nome}: ${rq.reservas} reserva(s); a NBR 5410 pede ${rq.reservasMin} para ${rq.circuitos.length - rq.reservas} circuitos.` });
       alerta(q, 'aviso', `Faltam ${rq.reservasMin - rq.reservas} circuito(s) reserva.`);
     }
+    if (rq.excedePeca) avisos.push({ nivel: 'erro', texto: `${nome}: ${rq.modulos} módulos não cabem na peça de ${q.modulosPeca} módulos.` });
     if (rq.deseq > 0.15 && rq.instalada > 2000) {
       avisos.push({ nivel: 'aviso', texto: `${nome}: desequilíbrio de fases de ${(rq.deseq * 100).toFixed(0)}%.` });
       alerta(q, 'aviso', `Fases desequilibradas (${(rq.deseq * 100).toFixed(0)}%).`);
@@ -498,7 +587,7 @@ export function calcularEletrica(projeto) {
     return { pav, P, x: P ? sx / P : null, y: P ? sy / P : null };
   });
 
-  return { cfg, circuitos: resultados, quadros: [...resQuadro.values()], segmentos, alimentadores, alertas, avisos, ambientes: verifAmb, centros, redePorQuadro };
+  return { cfg, circuitos: resultados, quadros: [...resQuadro.values()], segmentos, alimentadores, alertas, avisos, ambientes: verifAmb, centros, redePorQuadro, redes };
 }
 
 export function nomeQuadro(q, projeto) {
@@ -593,7 +682,8 @@ export function listaMateriais(projeto, entrada) {
   const COR = { F: 'fase', N: 'neutro (azul)', T: 'proteção (verde)', R: 'retorno' };
   for (const s of calc.segmentos) {
     for (const c of s.condutores) add(`Cabo de cobre 750 V ${fmtSec(c.secao)} mm² — ${COR[c.tipo]}`, 'm', s.comp * 1.1);
-    add(`Eletroduto corrugado PVC DN ${s.dn}`, 'm', s.comp * 1.05);
+    add(`${calc.cfg?.material || 'Eletroduto corrugado PVC'} DN ${s.dn}`, 'm', s.comp * 1.05);
+    add(`Curva 90° DN ${s.dn}`, 'pç', /corrugado|calha/i.test(calc.cfg?.material || 'corrugado') ? 0 : s.curvas);
   }
   for (const a of calc.alimentadores) {
     if (!a.secao) continue;
