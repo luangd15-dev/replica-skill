@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "dxf": {
+      "source": "earthtojake/text-to-cad",
+      "sourceType": "github",
+      "skillPath": "skills/dxf/SKILL.md",
+      "computedHash": "1b585c095874646c3b08f7b35bcbd298665fcbbc884ac65bf2e7f0baa0d4fc48"
+    }
+  }
+}
